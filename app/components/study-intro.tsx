@@ -25,7 +25,7 @@ export function StudyIntro({ onComplete }: StudyIntroProps) {
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const compact = window.matchMedia("(max-width: 720px)").matches;
     const speed = reduceMotion ? 0 : compact ? 0.78 : 1;
-    const complete = contextSafe(() => onComplete());
+    const complete = contextSafe?.(() => onComplete()) ?? onComplete;
     const tl = gsap.timeline({
       paused: true,
       defaults: { ease: "power3.out" },

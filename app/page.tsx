@@ -130,8 +130,10 @@ export default function Home() {
     const buttons = gsap.utils.toArray<HTMLElement>("button", appRef.current);
     const cleanups: Array<() => void> = [];
     buttons.forEach((button) => {
-      const onEnter = contextSafe(() => gsap.to(button, { y: -2, scale: 1.015, duration: 0.18, ease: "power2.out", overwrite: "auto" }));
-      const onLeave = contextSafe(() => gsap.to(button, { y: 0, scale: 1, duration: 0.22, ease: "power2.out", overwrite: "auto" }));
+      const onEnter = contextSafe?.(() => { gsap.to(button, { y: -2, scale: 1.015, duration: 0.18, ease: "power2.out", overwrite: "auto" }); })
+        ?? (() => { gsap.to(button, { y: -2, scale: 1.015, duration: 0.18, ease: "power2.out", overwrite: "auto" }); });
+      const onLeave = contextSafe?.(() => { gsap.to(button, { y: 0, scale: 1, duration: 0.22, ease: "power2.out", overwrite: "auto" }); })
+        ?? (() => { gsap.to(button, { y: 0, scale: 1, duration: 0.22, ease: "power2.out", overwrite: "auto" }); });
       button.addEventListener("pointerenter", onEnter);
       button.addEventListener("pointerleave", onLeave);
       cleanups.push(() => {
