@@ -55,3 +55,106 @@ test("the product enforces the agreed Sprint 1 boundaries", async () => {
   assert.match(prototype, /单文件 100MB/);
   assert.match(prototype, /GLM-5V-Turbo/);
 });
+
+test("Sprint 2 model proxy keeps credentials server-side", async () => {
+  const [route, contract, page, envExample] = await Promise.all([
+    read("app/api/ai/extract/route.ts"),
+    read("app/lib/ai-contract.ts"),
+    read("app/page.tsx"),
+    read(".env.example"),
+  ]);
+
+  assert.match(route, /process\.env\.GLM_API_KEY/);
+  assert.match(route, /glm-5v-turbo/);
+  assert.match(route, /Cache-Control/);
+  assert.match(route, /isSameOriginRequest/);
+  assert.match(contract, /requiresConfirmation: true/);
+  assert.match(contract, /MAX_IMAGE_DATA_LENGTH/);
+  assert.match(page, /\/api\/ai\/extract/);
+  assert.match(page, /确认并保存/);
+  assert.match(envExample, /GLM_API_KEY=replace-with-your-server-side-key/);
+  assert.doesNotMatch(`${route}\n${contract}\n${page}\n${envExample}`, /[a-f0-9]{32}\.[A-Za-z0-9]{16,}/);
+});
+
+test("Sprint 2 stores original files in IndexedDB", async () => {
+  const [store, preview] = await Promise.all([
+    read("app/lib/local-store.ts"),
+    read("app/lib/file-preview.ts"),
+  ]);
+  assert.match(store, /const DB_VERSION = 2/);
+  assert.match(store, /const FILE_STORE = "files"/);
+  assert.match(store, /saveLocalFile/);
+  assert.match(store, /100 \* 1024 \* 1024/);
+  assert.match(preview, /JSZip/);
+  assert.match(preview, /word\/document\.xml/);
+  assert.match(preview, /ppt\\\/slides/);
+  assert.match(preview, /URL\.revokeObjectURL/);
+});
+
+test("Sprint 2 batch import enforces limits and per-file recovery", async () => {
+  const [page, queueLogic, queueView, css] = await Promise.all([
+    read("app/page.tsx"),
+    read("app/lib/import-queue.ts"),
+    read("app/components/import-queue.tsx"),
+    read("app/globals.css"),
+  ]);
+
+  assert.match(queueLogic, /MAX_IMPORT_FILE_BYTES = 100 \* 1024 \* 1024/);
+  assert.match(queueLogic, /MAX_IMPORT_BATCH_BYTES = 500 \* 1024 \* 1024/);
+  assert.match(queueLogic, /validateImportSelection/);
+  assert.match(queueLogic, /awaiting_confirmation/);
+  assert.match(page, /for \(const item of items\)/);
+  assert.match(page, /new AbortController\(\)/);
+  assert.match(page, /cancelledImportIdsRef/);
+  assert.match(page, /savingImportIdsRef/);
+  assert.match(page, /multiple/);
+  assert.match(page, /Array\.from\(event\.target\.files/);
+  assert.match(queueView, /同时保存识别到的 DDL/);
+  assert.match(queueView, /重试识别/);
+  assert.match(queueView, /重试保存/);
+  assert.match(queueView, /清理已结束/);
+  assert.match(css, /\.queue-progress/);
+  assert.match(css, /\.status-awaiting_confirmation/);
+});
+
+test("GSAP motion layer is scoped, responsive, and reduced-motion aware", async () => {
+  const [page, css, packageJson] = await Promise.all([
+    read("app/page.tsx"),
+    read("app/globals.css"),
+    read("package.json"),
+  ]);
+
+  const manifest = JSON.parse(packageJson);
+  assert.ok(manifest.dependencies.gsap);
+  assert.ok(manifest.dependencies["@gsap/react"]);
+  assert.match(page, /useGSAP/);
+  assert.match(page, /window\.matchMedia/);
+  assert.doesNotMatch(page, /gsap\.matchMedia\(\)/);
+  assert.doesNotMatch(page, /mm\.(add|revert)/);
+  assert.match(page, /prefers-reduced-motion/);
+  assert.match(page, /contextSafe/);
+  assert.match(page, /scope: appRef/);
+  assert.match(page, /revertOnUpdate: true/);
+  assert.match(css, /will-change: transform/);
+  assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
+});
+
+test("full-screen study intro is wired to the app entry", async () => {
+  const [page, intro, css] = await Promise.all([
+    read("app/page.tsx"),
+    read("app/components/study-intro.tsx"),
+    read("app/globals.css"),
+  ]);
+
+  assert.match(page, /showIntro/);
+  assert.match(page, /<StudyIntro onComplete=\{\(\) => setShowIntro\(false\)\} \/>/);
+  assert.match(intro, /role="dialog"/);
+  assert.match(intro, /跳过片头/);
+  assert.match(intro, /gsap\.timeline/);
+  assert.match(intro, /intro-orbit/);
+  assert.match(intro, /intro-node/);
+  assert.match(intro, /onComplete: complete/);
+  assert.match(css, /\.study-intro \{/);
+  assert.match(css, /\.intro-grid \{/);
+  assert.match(css, /\.intro-core \{/);
+});

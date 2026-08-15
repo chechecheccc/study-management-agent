@@ -10,11 +10,24 @@ export type Resource = {
   id: string;
   title: string;
   courseId: string;
-  type: "课件" | "作业" | "笔记" | "通知" | "其他";
+  type: "课件" | "作业" | "笔记" | "通知" | "试卷" | "其他";
   tags: string[];
   status: "未整理" | "学习中" | "待复习" | "已归档";
   importedAt: string;
   fileName?: string;
+  fileId?: string;
+  fileSize?: number;
+  mimeType?: string;
+};
+
+export type LocalFileRecord = {
+  id: string;
+  resourceId: string;
+  name: string;
+  type: string;
+  size: number;
+  blob: Blob;
+  storedAt: string;
 };
 
 export type Task = {
@@ -35,8 +48,10 @@ export type AppSnapshot = {
 };
 
 const DB_NAME = "study-agent-local";
-const DB_VERSION = 1;
-const STORES = ["courses", "resources", "tasks"] as const;
+const DB_VERSION = 2;
+const DATA_STORES = ["courses", "resources", "tasks"] as const;
+const FILE_STORE = "files";
+const ALL_STORES = [...DATA_STORES, FILE_STORE] as const;
 const FALLBACK_KEY = "study-agent-snapshot";
 
 function openDb(): Promise<IDBDatabase> {
@@ -44,7 +59,7 @@ function openDb(): Promise<IDBDatabase> {
     const request = indexedDB.open(DB_NAME, DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      STORES.forEach((store) => {
+      ALL_STORES.forEach((store) => {
         if (!db.objectStoreNames.contains(store)) {
           db.createObjectStore(store, { keyPath: "id" });
         }
@@ -55,7 +70,7 @@ function openDb(): Promise<IDBDatabase> {
   });
 }
 
-function readStore<T>(db: IDBDatabase, storeName: (typeof STORES)[number]) {
+function readStore<T>(db: IDBDatabase, storeName: (typeof ALL_STORES)[number]) {
   return new Promise<T[]>((resolve, reject) => {
     const transaction = db.transaction(storeName, "readonly");
     const request = transaction.objectStore(storeName).getAll();
@@ -66,7 +81,7 @@ function readStore<T>(db: IDBDatabase, storeName: (typeof STORES)[number]) {
 
 function saveStore(
   transaction: IDBTransaction,
-  storeName: (typeof STORES)[number],
+  storeName: (typeof DATA_STORES)[number],
   records: unknown[],
 ) {
   const store = transaction.objectStore(storeName);
@@ -100,8 +115,8 @@ export async function saveSnapshot(snapshot: AppSnapshot) {
   try {
     const db = await openDb();
     await new Promise<void>((resolve, reject) => {
-      const transaction = db.transaction([...STORES], "readwrite");
-      STORES.forEach((storeName) => {
+      const transaction = db.transaction([...DATA_STORES], "readwrite");
+      DATA_STORES.forEach((storeName) => {
         saveStore(transaction, storeName, snapshot[storeName]);
       });
       transaction.oncomplete = () => resolve();
@@ -112,6 +127,57 @@ export async function saveSnapshot(snapshot: AppSnapshot) {
   } catch {
     window.localStorage.setItem(FALLBACK_KEY, JSON.stringify(snapshot));
   }
+}
+
+export async function saveLocalFile(resourceId: string, file: File) {
+  if (typeof indexedDB === "undefined") throw new Error("INDEXED_DB_UNAVAILABLE");
+  if (file.size > 100 * 1024 * 1024) throw new Error("FILE_TOO_LARGE");
+
+  const record: LocalFileRecord = {
+    id: makeId("file"),
+    resourceId,
+    name: file.name,
+    type: file.type || "application/octet-stream",
+    size: file.size,
+    blob: file,
+    storedAt: new Date().toISOString(),
+  };
+
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(FILE_STORE, "readwrite");
+    transaction.objectStore(FILE_STORE).put(record);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+    transaction.onabort = () => reject(transaction.error);
+  });
+  db.close();
+  return record;
+}
+
+export async function getLocalFile(fileId: string) {
+  if (typeof indexedDB === "undefined") return null;
+  const db = await openDb();
+  const record = await new Promise<LocalFileRecord | null>((resolve, reject) => {
+    const transaction = db.transaction(FILE_STORE, "readonly");
+    const request = transaction.objectStore(FILE_STORE).get(fileId);
+    request.onsuccess = () => resolve((request.result as LocalFileRecord | undefined) ?? null);
+    request.onerror = () => reject(request.error);
+  });
+  db.close();
+  return record;
+}
+
+export async function deleteLocalFile(fileId: string) {
+  if (typeof indexedDB === "undefined") return;
+  const db = await openDb();
+  await new Promise<void>((resolve, reject) => {
+    const transaction = db.transaction(FILE_STORE, "readwrite");
+    transaction.objectStore(FILE_STORE).delete(fileId);
+    transaction.oncomplete = () => resolve();
+    transaction.onerror = () => reject(transaction.error);
+  });
+  db.close();
 }
 
 export function emptySnapshot(): AppSnapshot {
