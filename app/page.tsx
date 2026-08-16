@@ -20,6 +20,7 @@ import {
 import type { Confidence, ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
+import { extractPdfForImport, mergeExtractResults } from "./lib/pdf-extract";
 import {
   buildFallbackImportDraft,
   buildImportDraft,
@@ -365,16 +366,47 @@ export default function Home() {
         importAbortControllersRef.current.set(item.id, controller);
 
         try {
-          let request: ExtractRequest;
-          if (isImageImportFile(item.file) && item.file.size <= 10 * 1024 * 1024) {
+          let result: ExtractResult;
+          if (isPdfImportFile(item.file)) {
+            const extraction = await extractPdfForImport(item.file, controller.signal);
+            if (extraction.text) {
+              result = await requestExtraction(
+                { mode: "text", text: extraction.text, fileName: item.file.name },
+                controller.signal,
+              );
+            } else if (extraction.previewImages.length) {
+              const pageResults: ExtractResult[] = [];
+              for (const [index, imageDataUrl] of extraction.previewImages.entries()) {
+                pageResults.push(await requestExtraction(
+                  {
+                    mode: "image",
+                    imageDataUrl,
+                    fileName: `${item.file.name}（第${index + 1}页）`,
+                  },
+                  controller.signal,
+                ));
+              }
+              result = mergeExtractResults(pageResults);
+            } else {
+              result = await requestExtraction(
+                { mode: "filename", fileName: item.file.name },
+                controller.signal,
+              );
+            }
+          } else if (isImageImportFile(item.file) && item.file.size <= 10 * 1024 * 1024) {
             const imageDataUrl = await readAsDataUrl(item.file);
             if (cancelledImportIdsRef.current.has(item.id)) throw new DOMException("Cancelled", "AbortError");
-            request = { mode: "image", imageDataUrl, fileName: item.file.name };
+            result = await requestExtraction(
+              { mode: "image", imageDataUrl, fileName: item.file.name },
+              controller.signal,
+            );
           } else {
-            request = { mode: "filename", fileName: item.file.name };
+            result = await requestExtraction(
+              { mode: "filename", fileName: item.file.name },
+              controller.signal,
+            );
           }
 
-          const result = await requestExtraction(request, controller.signal);
           if (cancelledImportIdsRef.current.has(item.id)) throw new DOMException("Cancelled", "AbortError");
           const draft = buildImportDraft(result, item.file, snapshot.courses);
           updateImportQueueItem(item.id, (current) => ({
@@ -1188,6 +1220,10 @@ function readAsDataUrl(file: File) {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(file);
   });
+}
+
+function isPdfImportFile(file: File) {
+  return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
 }
 
 function stripExtension(fileName: string) {
