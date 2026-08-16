@@ -24,10 +24,9 @@ export async function extractPdfForImport(
 ): Promise<PdfImportExtraction> {
   throwIfAborted(signal);
   const pdfjs = await import("pdfjs-dist/legacy/build/pdf.mjs");
-  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
-    "pdfjs-dist/legacy/build/pdf.worker.min.mjs",
-    import.meta.url,
-  ).toString();
+  // Serve the worker from `public/` so EdgeOne does not have to resolve a
+  // dynamically emitted `_next/static/media/*.mjs` module at runtime.
+  pdfjs.GlobalWorkerOptions.workerSrc = "/pdf.worker.min.mjs";
   const loadingTask = pdfjs.getDocument({
     data: new Uint8Array(await file.arrayBuffer()),
   });
