@@ -17,7 +17,7 @@ import {
   saveLocalFile,
   saveSnapshot,
 } from "./lib/local-store";
-import type { Confidence, ExtractRequest, ExtractResult } from "./lib/ai-contract";
+import type { ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
 import { extractPdfForImport, mergeExtractResults } from "./lib/pdf-extract";
@@ -27,24 +27,60 @@ import {
   isImageImportFile,
   validateImportSelection,
 } from "./lib/import-queue";
-import type { ImportQueueItem, PendingMeta, PendingResourceDraft } from "./lib/import-queue";
+import type { ImportQueueItem, PendingResourceDraft } from "./lib/import-queue";
 import { BatchImportQueue } from "./components/import-queue";
 import { StudyIntro } from "./components/study-intro";
+import { runAgentLoop } from "./agent/loop";
+import type { ConfirmationDecision, HistoryMessage, ToolExecutionResult } from "./agent/loop";
+import type { AgentStepResponse, AgentToolCall, AgentWireMessage } from "./agent/protocol";
+import { getToolSpec } from "./agent/tools";
+import { loadProfile, saveProfile, sanitizeProfile } from "./agent/memory";
+import type { UserProfile } from "./agent/memory";
+import { buildProactiveFallback, buildProactiveGoal, computeProactiveSignals } from "./agent/triggers";
 
 gsap.registerPlugin(useGSAP);
 
 type View = "assistant" | "resources" | "tasks" | "review" | "data";
+
+type ToolStep = {
+  id: string;
+  label: string;
+  status: "running" | "done" | "failed";
+  detail?: string;
+};
+
 type ChatMessage = {
   id: string;
   role: "user" | "assistant";
   text: string;
+  steps?: ToolStep[];
+};
+
+type TaskConfirmDraft = {
+  title: string;
+  courseId: string;
+  type: Task["type"];
+  dueAt: string;
+  priority: Task["priority"];
+  reminder: string;
+};
+
+type PlanSession = {
+  date: string;
+  title: string;
+  durationMinutes: number;
+};
+
+type PlanConfirmState = {
+  courseName: string;
+  sessions: PlanSession[];
 };
 
 const initialMessages: ChatMessage[] = [
   {
     id: "welcome",
     role: "assistant",
-    text: "你好，我是你的学习管家。你可以直接说“帮我记下这个DDL”“找数据库的课件”或“安排本周复习”。",
+    text: "你好，我是你的学习管家智能体。我可以自己查资料库和任务表后再回答你，也能帮你记 DDL、安排复习——写入前会先给你确认。试试说：“我下周有什么要交的？”",
   },
 ];
 
@@ -82,12 +118,9 @@ export default function Home() {
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
-  const [pendingTask, setPendingTask] = useState<Task | null>(null);
-  const [pendingMeta, setPendingMeta] = useState<PendingMeta | null>(null);
-  const [pendingResource, setPendingResource] = useState<PendingResourceDraft | null>(null);
-  const [extracting, setExtracting] = useState(false);
-  const [extractError, setExtractError] = useState("");
   const [modelConfigured, setModelConfigured] = useState<boolean | null>(null);
+  const [agentRunning, setAgentRunning] = useState(false);
+  const [extractError, setExtractError] = useState("");
   const [importQueue, setImportQueue] = useState<ImportQueueItem[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
   const [showResourceForm, setShowResourceForm] = useState(false);
@@ -98,12 +131,22 @@ export default function Home() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskCourse, setTaskCourse] = useState("");
   const [taskDueAt, setTaskDueAt] = useState("2026-08-12T23:59");
+  const [profile, setProfile] = useState<UserProfile>(() => (typeof window === "undefined" ? { name: "", studyTime: "", goal: "" } : loadProfile()));
+  const [pendingTaskConfirm, setPendingTaskConfirm] = useState<AgentToolCall | null>(null);
+  const [taskConfirmDraft, setTaskConfirmDraft] = useState<TaskConfirmDraft | null>(null);
+  const [pendingPlanConfirm, setPendingPlanConfirm] = useState<PlanConfirmState | null>(null);
+  const [confirmError, setConfirmError] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const batchRunningRef = useRef(false);
+  const agentRunningRef = useRef(false);
+  const agentHistoryRef = useRef<HistoryMessage[]>([]);
+  const confirmResolverRef = useRef<((decision: ConfirmationDecision) => void) | null>(null);
   const cancelledImportIdsRef = useRef(new Set<string>());
   const importAbortControllersRef = useRef(new Map<string, AbortController>());
   const savingImportIdsRef = useRef(new Set<string>());
+  const snapshotRef = useRef(snapshot);
+  const profileRef = useRef(profile);
 
   useGSAP(() => {
     const intro = gsap.timeline({ defaults: { ease: "power3.out" } });
@@ -158,7 +201,7 @@ export default function Home() {
     );
   }, {
     scope: appRef,
-    dependencies: [view, messages.length, Boolean(pendingTask), Boolean(pendingResource), importQueue.length],
+    dependencies: [view, messages.length, Boolean(pendingTaskConfirm), Boolean(pendingPlanConfirm), importQueue.length],
     revertOnUpdate: true,
   });
 
@@ -167,6 +210,14 @@ export default function Home() {
     gsap.to(".ambient-glow-one", { x: 24, y: -18, rotation: 12, repeat: -1, yoyo: true, duration: 7, ease: "sine.inOut" });
     gsap.to(".ambient-glow-two", { x: -18, y: 22, rotation: -10, repeat: -1, yoyo: true, duration: 9, ease: "sine.inOut" });
   }, { scope: appRef });
+
+  useEffect(() => {
+    snapshotRef.current = snapshot;
+  }, [snapshot]);
+
+  useEffect(() => {
+    profileRef.current = profile;
+  }, [profile]);
 
   useEffect(() => {
     loadSnapshot().then((stored) => {
@@ -222,48 +273,391 @@ export default function Home() {
     setMessages((current) => [...current, { id: makeId("message"), role: "assistant", text }]);
   };
 
-  const findCourseId = (courseName: string | null) => {
-    if (!courseName) return "";
+  // ---------- Agent 循环接入 ----------
+
+  const resolveCourseId = (courseName: string) => {
     const normalized = courseName.replace(/\s+/g, "").toLowerCase();
-    return snapshot.courses.find((course) => course.name.replace(/\s+/g, "").toLowerCase() === normalized)?.id ?? "";
+    if (!normalized) return "";
+    const courses = snapshotRef.current.courses;
+    return (
+      courses.find((course) => course.name.replace(/\s+/g, "").toLowerCase() === normalized)?.id ??
+      courses.find((course) => {
+        const name = course.name.replace(/\s+/g, "").toLowerCase();
+        return normalized.includes(name) || name.includes(normalized);
+      })?.id ??
+      ""
+    );
   };
 
-  const applyExtractResult = (result: ExtractResult, file?: File) => {
-    const firstTask = result.tasks[0];
-    if (firstTask) {
-      setPendingTask({
-        id: makeId("task-draft"),
-        title: firstTask.title,
-        courseId: findCourseId(firstTask.courseName),
-        type: firstTask.taskType === "其他" ? "DDL" : firstTask.taskType,
-        dueAt: firstTask.dueAt?.slice(0, 16) ?? "",
-        status: "未开始",
-        priority: firstTask.confidence === "high" ? "高" : "中",
-        reminder: "提前3天、1天、2小时",
-      });
-      setPendingMeta({
-        confidence: firstTask.confidence,
-        evidence: firstTask.evidence,
-        questions: [...firstTask.ambiguities, ...result.questions].slice(0, 8),
-      });
+  const requestAgentStep = async (wireMessages: AgentWireMessage[]): Promise<AgentStepResponse> => {
+    const response = await fetch("/api/agent/step", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        messages: wireMessages,
+        context: {
+          currentDate: new Date().toISOString(),
+          timezone: "Asia/Shanghai",
+          profile: profileRef.current,
+        },
+      }),
+    });
+    const data = (await response.json()) as {
+      ok?: boolean;
+      type?: "message" | "tool_calls";
+      content?: string;
+      calls?: AgentToolCall[];
+      error?: { message?: string };
+    };
+    if (!response.ok || !data.ok || !data.type) {
+      throw new Error(data.error?.message || "智能体暂时不可用，请稍后重试。");
     }
-
-    if (result.resource || file) {
-      const candidate = result.resource;
-      setPendingResource({
-        title: candidate?.title || stripExtension(file?.name || "待整理资料"),
-        courseId: findCourseId(candidate?.courseName ?? null),
-        type: candidate?.resourceType ?? guessResourceType(file?.name || ""),
-        tags: candidate?.tags?.length ? candidate.tags : ["待整理"],
-        confidence: candidate?.confidence ?? "low",
-        evidence: candidate?.evidence || "根据文件名生成的本地建议",
-        file,
-      });
-    }
-
-    const followUp = result.questions.length ? ` 还需要确认：${result.questions.join("；")}` : "";
-    addAssistantMessage(`${result.summary}${followUp}`);
+    return { type: data.type, content: data.content ?? "", calls: data.calls ?? [] } as AgentStepResponse;
   };
+
+  const executeAgentTool = async (call: AgentToolCall): Promise<ToolExecutionResult> => {
+    const args = call.arguments;
+    const snap = snapshotRef.current;
+    const courseNameOf = (courseId: string) => snap.courses.find((course) => course.id === courseId)?.name ?? "未分类";
+
+    switch (call.name) {
+      case "list_courses": {
+        const data = snap.courses.map((course) => ({
+          name: course.name,
+          semester: course.semester,
+          resources: snap.resources.filter((resource) => resource.courseId === course.id).length,
+        }));
+        return { ok: true, summary: `共 ${data.length} 门课程`, data };
+      }
+      case "list_tasks": {
+        const includeCompleted = args.includeCompleted === true;
+        const statusFilter = asString(args.status);
+        const courseFilter = asString(args.courseName);
+        const withinDays = typeof args.dueWithinDays === "number" ? args.dueWithinDays : null;
+        const now = Date.now();
+        let tasks = snap.tasks.filter((task) => includeCompleted || task.status !== "已完成");
+        if (statusFilter) tasks = tasks.filter((task) => task.status === statusFilter);
+        if (courseFilter) {
+          const courseId = resolveCourseId(courseFilter);
+          tasks = courseId ? tasks.filter((task) => task.courseId === courseId) : [];
+        }
+        if (withinDays !== null) {
+          tasks = tasks.filter((task) => {
+            const due = new Date(task.dueAt).getTime();
+            return !Number.isNaN(due) && due >= now - 86_400_000 && due <= now + withinDays * 86_400_000;
+          });
+        }
+        tasks = [...tasks].sort((a, b) => a.dueAt.localeCompare(b.dueAt)).slice(0, 20);
+        return {
+          ok: true,
+          summary: `找到 ${tasks.length} 条任务`,
+          data: tasks.map((task) => ({
+            title: task.title,
+            course: courseNameOf(task.courseId),
+            type: task.type,
+            dueAt: task.dueAt,
+            status: task.status,
+            priority: task.priority,
+          })),
+        };
+      }
+      case "search_resources": {
+        const keyword = asString(args.keyword).trim().toLowerCase();
+        const courseFilter = asString(args.courseName);
+        const typeFilter = asString(args.type);
+        const statusFilter = asString(args.status);
+        let resources = snap.resources;
+        if (courseFilter) {
+          const courseId = resolveCourseId(courseFilter);
+          resources = courseId ? resources.filter((resource) => resource.courseId === courseId) : [];
+        }
+        if (typeFilter) resources = resources.filter((resource) => resource.type === typeFilter);
+        if (statusFilter) resources = resources.filter((resource) => resource.status === statusFilter);
+        if (keyword) {
+          resources = resources.filter((resource) =>
+            [resource.title, resource.fileName, courseNameOf(resource.courseId), ...resource.tags]
+              .filter(Boolean)
+              .join(" ")
+              .toLowerCase()
+              .includes(keyword),
+          );
+        }
+        const data = resources.slice(0, 10).map((resource) => ({
+          title: resource.title,
+          course: courseNameOf(resource.courseId),
+          type: resource.type,
+          tags: resource.tags,
+          status: resource.status,
+          fileName: resource.fileName ?? null,
+        }));
+        return { ok: true, summary: `找到 ${data.length} 份资料`, data };
+      }
+      case "navigate": {
+        const target = asString(args.view);
+        if (!["assistant", "resources", "tasks", "review", "data"].includes(target)) {
+          return { ok: false, summary: `未知页面：${target}` };
+        }
+        const keyword = asString(args.keyword).trim();
+        if (keyword) setSearch(keyword);
+        setView(target as View);
+        return { ok: true, summary: `已打开「${viewLabels[target as View]}」页面` };
+      }
+      case "update_profile": {
+        const patch: Partial<UserProfile> = {};
+        if (asString(args.name).trim()) patch.name = asString(args.name);
+        if (asString(args.studyTime).trim()) patch.studyTime = asString(args.studyTime);
+        if (asString(args.goal).trim()) patch.goal = asString(args.goal);
+        if (!Object.keys(patch).length) return { ok: false, summary: "没有提供要更新的画像内容。" };
+        const next = sanitizeProfile({ ...profileRef.current, ...patch });
+        profileRef.current = next;
+        setProfile(next);
+        saveProfile(next);
+        return { ok: true, summary: "已更新长期记忆（用户画像）。", data: next };
+      }
+      case "update_task_status": {
+        const title = asString(args.taskTitle).trim();
+        const status = asString(args.status) as Task["status"];
+        if (!title || !["未开始", "进行中", "已完成", "已逾期"].includes(status)) {
+          return { ok: false, summary: "缺少任务标题或状态不合法。" };
+        }
+        const task =
+          snap.tasks.find((candidate) => candidate.title === title) ??
+          snap.tasks.find((candidate) => candidate.title.includes(title) || title.includes(candidate.title));
+        if (!task) return { ok: false, summary: `没有找到标题包含「${title}」的任务。` };
+        setSnapshot((current) => ({
+          ...current,
+          tasks: current.tasks.map((candidate) => (candidate.id === task.id ? { ...candidate, status } : candidate)),
+        }));
+        return { ok: true, summary: `已将「${task.title}」标记为${status}` };
+      }
+      case "create_task": {
+        const title = asString(args.title).trim();
+        const courseId = resolveCourseId(asString(args.courseName));
+        const dueAt = toLocalInputValue(asString(args.dueAt));
+        const type = (["DDL", "考试", "复习"].includes(asString(args.type)) ? asString(args.type) : "DDL") as Task["type"];
+        if (!title || !courseId || !dueAt) {
+          return { ok: false, summary: "任务信息不完整（名称、课程或截止时间缺失），未写入。" };
+        }
+        const task: Task = {
+          id: makeId("task"),
+          title,
+          courseId,
+          type,
+          dueAt,
+          status: "未开始",
+          priority: (["高", "中", "低"].includes(asString(args.priority)) ? asString(args.priority) : "中") as Task["priority"],
+          reminder: asString(args.reminder).trim() || "提前3天、1天、2小时",
+        };
+        setSnapshot((current) => ({ ...current, tasks: [task, ...current.tasks] }));
+        return { ok: true, summary: `已创建${type}「${title}」，截止 ${formatDate(task.dueAt)}` };
+      }
+      case "save_review_plan": {
+        const sessions = sanitizePlanSessions(args.sessions);
+        if (!sessions.length) return { ok: false, summary: "复习计划为空，未写入。" };
+        const courseId = resolveCourseId(asString(args.courseName));
+        const tasks: Task[] = sessions.map((session) => ({
+          id: makeId("task"),
+          title: session.title,
+          courseId,
+          type: "复习",
+          dueAt: toLocalInputValue(session.date),
+          status: "未开始",
+          priority: "中",
+          reminder: "提前2小时",
+        }));
+        setSnapshot((current) => ({ ...current, tasks: [...tasks, ...current.tasks] }));
+        return { ok: true, summary: `已保存 ${tasks.length} 个复习安排到任务中心`, data: { count: tasks.length } };
+      }
+      default:
+        return { ok: false, summary: `未知工具：${call.name}` };
+    }
+  };
+
+  const requestToolConfirmation = (call: AgentToolCall) =>
+    new Promise<ConfirmationDecision>((resolve) => {
+      if (call.name === "create_task") {
+        confirmResolverRef.current = resolve;
+        const type = asString(call.arguments.type);
+        const priority = asString(call.arguments.priority);
+        setTaskConfirmDraft({
+          title: asString(call.arguments.title),
+          courseId: resolveCourseId(asString(call.arguments.courseName)),
+          type: (["DDL", "考试", "复习"].includes(type) ? type : "DDL") as Task["type"],
+          dueAt: toLocalInputValue(asString(call.arguments.dueAt)),
+          priority: (["高", "中", "低"].includes(priority) ? priority : "中") as Task["priority"],
+          reminder: asString(call.arguments.reminder).trim() || "提前3天、1天、2小时",
+        });
+        setConfirmError("");
+        setPendingTaskConfirm(call);
+        return;
+      }
+      if (call.name === "save_review_plan") {
+        confirmResolverRef.current = resolve;
+        setPendingPlanConfirm({
+          courseName: asString(call.arguments.courseName),
+          sessions: sanitizePlanSessions(call.arguments.sessions),
+        });
+        setConfirmError("");
+        return;
+      }
+      resolve({ approved: false });
+    });
+
+  const settleConfirmation = (decision: ConfirmationDecision) => {
+    confirmResolverRef.current?.(decision);
+    confirmResolverRef.current = null;
+    setPendingTaskConfirm(null);
+    setTaskConfirmDraft(null);
+    setPendingPlanConfirm(null);
+    setConfirmError("");
+  };
+
+  const approveTaskConfirm = () => {
+    if (!taskConfirmDraft) return;
+    if (!taskConfirmDraft.title.trim() || !taskConfirmDraft.courseId || !taskConfirmDraft.dueAt) {
+      setConfirmError("请补充任务名称、课程和截止时间后再确认。");
+      return;
+    }
+    settleConfirmation({
+      approved: true,
+      arguments: {
+        title: taskConfirmDraft.title.trim(),
+        courseName: courseMap.get(taskConfirmDraft.courseId)?.name ?? "",
+        type: taskConfirmDraft.type,
+        dueAt: new Date(taskConfirmDraft.dueAt).toISOString(),
+        priority: taskConfirmDraft.priority,
+        reminder: taskConfirmDraft.reminder,
+      },
+    });
+  };
+
+  const approvePlanConfirm = () => {
+    if (!pendingPlanConfirm || !pendingPlanConfirm.sessions.length) {
+      setConfirmError("计划为空，无法保存。");
+      return;
+    }
+    settleConfirmation({
+      approved: true,
+      arguments: { courseName: pendingPlanConfirm.courseName, sessions: pendingPlanConfirm.sessions },
+    });
+  };
+
+  const rejectConfirm = () => settleConfirmation({ approved: false });
+
+  const updateMessageSteps = (messageId: string, updater: (steps: ToolStep[]) => ToolStep[]) => {
+    setMessages((current) =>
+      current.map((message) =>
+        message.id === messageId ? { ...message, steps: updater(message.steps ?? []) } : message,
+      ),
+    );
+  };
+
+  const runAgent = async (goal: string) => {
+    if (agentRunningRef.current) return;
+    agentRunningRef.current = true;
+    setAgentRunning(true);
+    const assistantId = makeId("message");
+    setMessages((current) => [...current, { id: assistantId, role: "assistant", text: "", steps: [] }]);
+    let finalText = "";
+    let failed = "";
+    try {
+      for await (const event of runAgentLoop({
+        goal,
+        history: agentHistoryRef.current,
+        step: requestAgentStep,
+        execute: executeAgentTool,
+        requestConfirmation: requestToolConfirmation,
+        maxSteps: 8,
+      })) {
+        if (event.type === "tool_call") {
+          const spec = getToolSpec(event.call.name);
+          updateMessageSteps(assistantId, (steps) => [
+            ...steps,
+            { id: event.call.id, label: spec?.label ?? event.call.name, status: "running" },
+          ]);
+        } else if (event.type === "tool_result") {
+          updateMessageSteps(assistantId, (steps) =>
+            steps.map((step) =>
+              step.id === event.call.id
+                ? { ...step, status: event.result.ok ? "done" : "failed", detail: event.result.summary }
+                : step,
+            ),
+          );
+        } else if (event.type === "message") {
+          finalText = event.content;
+          setMessages((current) =>
+            current.map((message) => (message.id === assistantId ? { ...message, text: event.content } : message)),
+          );
+        } else if (event.type === "done" && event.reason === "error") {
+          failed = event.error ?? "";
+        }
+      }
+    } finally {
+      if (!finalText) {
+        finalText = failed || "这次处理没有得出结论，请换个说法再试一次。";
+        setMessages((current) =>
+          current.map((message) => (message.id === assistantId ? { ...message, text: finalText } : message)),
+        );
+      }
+      const nextHistory: HistoryMessage[] = [
+        ...agentHistoryRef.current,
+        { role: "user", content: goal },
+        { role: "assistant", content: finalText },
+      ];
+      agentHistoryRef.current = nextHistory.slice(-12);
+      agentRunningRef.current = false;
+      setAgentRunning(false);
+    }
+  };
+
+  const sendMessage = async () => {
+    const text = input.trim();
+    if (!text || agentRunningRef.current || batchRunningRef.current) return;
+    setMessages((current) => [...current, { id: makeId("message"), role: "user", text }]);
+    setInput("");
+    await runAgent(text);
+  };
+
+  const generateReviewPlan = (courseId: string, examAt: string, availability: string) => {
+    if (agentRunningRef.current) return;
+    const course = snapshot.courses.find((item) => item.id === courseId);
+    const exam = new Date(examAt);
+    const goal = [
+      `请为「${course?.name ?? "未分类课程"}」制定复习计划。`,
+      `考试或目标时间：${Number.isNaN(exam.getTime()) ? examAt : exam.toISOString()}。`,
+      `我方便学习的时间：${availability || "未说明"}。`,
+      "请先调用工具查询该课程的未完成任务与已有资料，再把计划拆成具体到天、每次 30-90 分钟的可执行安排，所有安排必须早于考试时间，最后调用 save_review_plan 保存。",
+    ].join("");
+    void runAgent(goal);
+  };
+
+  // 主动性：每天首次打开时巡检本地数据，让智能体先开口。
+  useEffect(() => {
+    if (!ready || modelConfigured === null) return;
+    const today = new Date().toISOString().slice(0, 10);
+    let alreadyShown = false;
+    try {
+      alreadyShown = window.localStorage.getItem("study-agent-proactive-date") === today;
+    } catch {
+      alreadyShown = false;
+    }
+    if (alreadyShown) return;
+    const signals = computeProactiveSignals(snapshotRef.current);
+    if (!signals.length) return;
+    try {
+      window.localStorage.setItem("study-agent-proactive-date", today);
+    } catch {
+      // 忽略存储失败，明天再提醒一次也无妨
+    }
+    if (modelConfigured) {
+      void runAgent(buildProactiveGoal(signals));
+    } else {
+      addAssistantMessage(buildProactiveFallback(signals));
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [ready, modelConfigured]);
+
+  // ---------- 文件智能入库流水线（由用户上传触发，识别结果仍需确认后入库） ----------
 
   const requestExtraction = async (request: ExtractRequest, signal?: AbortSignal) => {
     const response = await fetch("/api/ai/extract", {
@@ -287,51 +681,6 @@ export default function Home() {
     }
     setModelConfigured(true);
     return data.result;
-  };
-
-  const runExtraction = async (request: ExtractRequest, file?: File) => {
-    setExtracting(true);
-    setExtractError("");
-    try {
-      const result = await requestExtraction(request);
-      applyExtractResult(result, file);
-      return true;
-    } catch (error) {
-      const message = error instanceof Error ? error.message : "在线识别暂时不可用。";
-      setExtractError(message);
-      addAssistantMessage(`${message} 原始内容没有丢失，你仍可手动完成录入。`);
-      if (file) setPendingResource(buildFallbackImportDraft(file, snapshot.courses));
-      return false;
-    } finally {
-      setExtracting(false);
-    }
-  };
-
-  const sendMessage = async () => {
-    const text = input.trim();
-    if (!text || extracting || batchRunningRef.current) return;
-    setMessages((current) => [...current, { id: makeId("message"), role: "user", text }]);
-    setInput("");
-
-    if (/找|查|搜索|课件|资料/.test(text)) {
-      setSearch(text.replace(/找|查|搜索|课件|资料/g, "").trim());
-      setView("resources");
-      addAssistantMessage("我已打开资料库，并按你的关键词筛选结果。你可以继续补充课程或资料类型。");
-      return;
-    }
-
-    if (/复习|计划|考试安排/.test(text)) {
-      setView("review");
-      addAssistantMessage("好的，我打开复习计划。请先选择课程、考试时间和你方便学习的日期/时间段。");
-      return;
-    }
-
-    if (/DDL|截止|作业|考试|提交|通知|课程群/.test(text)) {
-      await runExtraction({ mode: "text", text });
-      return;
-    }
-
-    addAssistantMessage("我可以帮你录入 DDL、整理资料、检索课程内容，或根据考试日期安排复习。你想先处理哪一件？");
   };
 
   const updateImportQueueItem = (
@@ -451,7 +800,7 @@ export default function Home() {
   };
 
   const handleAttachments = async (files: File[]) => {
-    if (!files.length || extracting) return;
+    if (!files.length || agentRunningRef.current) return;
     if (batchRunningRef.current) {
       setExtractError("当前批次仍在处理中，请完成或取消后再添加新文件。");
       return;
@@ -586,8 +935,8 @@ export default function Home() {
       : item);
   };
 
-  const toggleImportTask = (id: string, includeTask: boolean) => {
-    updateImportQueueItem(id, (item) => ({ ...item, includeTask, error: undefined }));
+  const toggleImportTask = (id: string, include: boolean) => {
+    updateImportQueueItem(id, (item) => ({ ...item, includeTask: include }));
   };
 
   const useManualImportDraft = (id: string) => {
@@ -597,6 +946,7 @@ export default function Home() {
   };
 
   const removeImportItem = (id: string) => {
+    importAbortControllersRef.current.get(id)?.abort();
     cancelledImportIdsRef.current.delete(id);
     setImportQueue((current) => current.filter((item) => item.id !== id));
   };
@@ -608,50 +958,7 @@ export default function Home() {
     setImportQueue((current) => current.filter((item) => item.status !== "saved" && item.status !== "cancelled"));
   };
 
-  const confirmPendingTask = () => {
-    if (!pendingTask) return;
-    if (!pendingTask.courseId || !pendingTask.dueAt || !pendingTask.title.trim()) {
-      addAssistantMessage("课程、任务名称或截止时间仍不完整，请先补充后再确认。 ");
-      return;
-    }
-    setSnapshot((current) => ({ ...current, tasks: [pendingTask, ...current.tasks] }));
-    setPendingTask(null);
-    setPendingMeta(null);
-    addAssistantMessage("已保存任务，并设置了提前 3 天、1 天和 2 小时的提醒规则。之后可以在任务中心修改。");
-  };
-
-  const confirmPendingResource = async () => {
-    if (!pendingResource) return;
-    if (!pendingResource.courseId || !pendingResource.title.trim()) {
-      addAssistantMessage("资料名称或课程仍不完整，请先补充后再确认。 ");
-      return;
-    }
-
-    const resourceId = makeId("resource");
-    try {
-      const fileRecord = pendingResource.file
-        ? await saveLocalFile(resourceId, pendingResource.file)
-        : null;
-      const resource: Resource = {
-        id: resourceId,
-        title: pendingResource.title.trim(),
-        courseId: pendingResource.courseId,
-        type: pendingResource.type,
-        tags: pendingResource.tags,
-        status: "未整理",
-        importedAt: new Date().toISOString().slice(0, 10),
-        fileName: pendingResource.file?.name,
-        fileId: fileRecord?.id,
-        fileSize: fileRecord?.size,
-        mimeType: fileRecord?.type,
-      };
-      setSnapshot((current) => ({ ...current, resources: [resource, ...current.resources] }));
-      setPendingResource(null);
-      addAssistantMessage("资料和原始文件已保存在当前浏览器，并加入本地检索目录。 ");
-    } catch {
-      addAssistantMessage("浏览器没有足够空间保存原文件，请先备份或清理本地空间。 ");
-    }
-  };
+  // ---------- 手动表单与数据管理 ----------
 
   const updateTaskStatus = (taskId: string, status: Task["status"]) => {
     setSnapshot((current) => ({
@@ -694,7 +1001,7 @@ export default function Home() {
   };
 
   const exportBackup = () => {
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
+    const blob = new Blob([JSON.stringify({ ...snapshot, profile }, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -708,11 +1015,16 @@ export default function Home() {
     const reader = new FileReader();
     reader.onload = () => {
       try {
-        const imported = JSON.parse(String(reader.result)) as AppSnapshot;
+        const imported = JSON.parse(String(reader.result)) as AppSnapshot & { profile?: UserProfile };
         if (!Array.isArray(imported.courses) || !Array.isArray(imported.resources) || !Array.isArray(imported.tasks)) {
           throw new Error("invalid backup");
         }
-        setSnapshot(imported);
+        setSnapshot({ courses: imported.courses, resources: imported.resources, tasks: imported.tasks });
+        if (imported.profile) {
+          const nextProfile = sanitizeProfile(imported.profile);
+          setProfile(nextProfile);
+          saveProfile(nextProfile);
+        }
         addAssistantMessage("备份已载入当前浏览器。请检查课程、资料和任务数量是否符合预期。");
       } catch {
         addAssistantMessage("这个备份文件无法读取。请确认它是学习管家导出的 JSON 备份。");
@@ -735,7 +1047,7 @@ export default function Home() {
           <div className="brand-mark">学</div>
           <div>
             <div className="brand-name">学习管家</div>
-            <div className="brand-caption">personal study desk</div>
+            <div className="brand-caption">personal study agent</div>
           </div>
         </div>
 
@@ -796,11 +1108,16 @@ export default function Home() {
               input={input}
               setInput={setInput}
               onSend={sendMessage}
-              pendingTask={pendingTask}
-              pendingMeta={pendingMeta}
-              pendingResource={pendingResource}
+              agentRunning={agentRunning}
+              pendingTaskConfirm={pendingTaskConfirm}
+              taskConfirmDraft={taskConfirmDraft}
+              setTaskConfirmDraft={setTaskConfirmDraft}
+              pendingPlanConfirm={pendingPlanConfirm}
+              confirmError={confirmError}
+              onApproveTask={approveTaskConfirm}
+              onApprovePlan={approvePlanConfirm}
+              onRejectConfirm={rejectConfirm}
               courses={snapshot.courses}
-              extracting={extracting}
               extractError={extractError}
               modelConfigured={modelConfigured}
               importQueue={importQueue}
@@ -816,12 +1133,6 @@ export default function Home() {
               onManualImport={useManualImportDraft}
               onRemoveImport={removeImportItem}
               onClearFinishedImports={clearFinishedImports}
-              onPendingTaskChange={setPendingTask}
-              onPendingResourceChange={setPendingResource}
-              onConfirm={confirmPendingTask}
-              onConfirmResource={confirmPendingResource}
-              onCancel={() => { setPendingTask(null); setPendingMeta(null); }}
-              onCancelResource={() => setPendingResource(null)}
               upcomingTasks={upcomingTasks}
               courseMap={courseMap}
               pendingCount={pendingCount}
@@ -867,11 +1178,23 @@ export default function Home() {
             />
           ) : null}
 
-          {view === "review" ? <ReviewView courses={snapshot.courses} resources={snapshot.resources} /> : null}
+          {view === "review" ? (
+            <ReviewView
+              courses={snapshot.courses}
+              running={agentRunning}
+              plan={pendingPlanConfirm}
+              confirmError={confirmError}
+              onGenerate={generateReviewPlan}
+              onApprovePlan={approvePlanConfirm}
+              onRejectPlan={rejectConfirm}
+            />
+          ) : null}
 
           {view === "data" ? (
             <DataView
               snapshot={snapshot}
+              profile={profile}
+              onSaveProfile={(next) => { const cleaned = sanitizeProfile(next); setProfile(cleaned); saveProfile(cleaned); addAssistantMessage("你的画像已更新，智能体之后的每一轮思考都会记住。 "); }}
               onExport={exportBackup}
               onImport={() => importInputRef.current?.click()}
               onFile={importBackup}
@@ -892,11 +1215,16 @@ function AssistantView({
   input,
   setInput,
   onSend,
-  pendingTask,
-  pendingMeta,
-  pendingResource,
+  agentRunning,
+  pendingTaskConfirm,
+  taskConfirmDraft,
+  setTaskConfirmDraft,
+  pendingPlanConfirm,
+  confirmError,
+  onApproveTask,
+  onApprovePlan,
+  onRejectConfirm,
   courses,
-  extracting,
   extractError,
   modelConfigured,
   importQueue,
@@ -912,12 +1240,6 @@ function AssistantView({
   onManualImport,
   onRemoveImport,
   onClearFinishedImports,
-  onPendingTaskChange,
-  onPendingResourceChange,
-  onConfirm,
-  onConfirmResource,
-  onCancel,
-  onCancelResource,
   upcomingTasks,
   courseMap,
   pendingCount,
@@ -928,11 +1250,16 @@ function AssistantView({
   input: string;
   setInput: (value: string) => void;
   onSend: () => void | Promise<void>;
-  pendingTask: Task | null;
-  pendingMeta: PendingMeta | null;
-  pendingResource: PendingResourceDraft | null;
+  agentRunning: boolean;
+  pendingTaskConfirm: AgentToolCall | null;
+  taskConfirmDraft: TaskConfirmDraft | null;
+  setTaskConfirmDraft: React.Dispatch<React.SetStateAction<TaskConfirmDraft | null>>;
+  pendingPlanConfirm: PlanConfirmState | null;
+  confirmError: string;
+  onApproveTask: () => void;
+  onApprovePlan: () => void;
+  onRejectConfirm: () => void;
   courses: Course[];
-  extracting: boolean;
   extractError: string;
   modelConfigured: boolean | null;
   importQueue: ImportQueueItem[];
@@ -948,71 +1275,73 @@ function AssistantView({
   onManualImport: (id: string) => void;
   onRemoveImport: (id: string) => void;
   onClearFinishedImports: () => void;
-  onPendingTaskChange: React.Dispatch<React.SetStateAction<Task | null>>;
-  onPendingResourceChange: React.Dispatch<React.SetStateAction<PendingResourceDraft | null>>;
-  onConfirm: () => void;
-  onConfirmResource: () => void | Promise<void>;
-  onCancel: () => void;
-  onCancelResource: () => void;
   upcomingTasks: Task[];
   courseMap: Map<string, Course>;
   pendingCount: number;
   completedCount: number;
   onNavigate: (view: View) => void;
 }) {
+  const today = new Date();
+  const busy = agentRunning || batchRunning;
   return (
     <div className="assistant-layout">
       <div className="assistant-column">
-        <div className="eyebrow">MONDAY, 03 AUGUST 2026</div>
+        <div className="eyebrow">{today.toLocaleDateString("en-US", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).toUpperCase()}</div>
         <h1>今天，把学习<br /><em>理清一点。</em></h1>
-        <p className="intro-copy">从一句话开始。整理资料、记下截止日期，或者让计划有一个可执行的起点。</p>
+        <p className="intro-copy">从一句话开始。我会自己查证你的课程、资料和任务，再行动；写入前一定先问你。</p>
 
         <div className="chat-panel">
           <div className="chat-head">
             <span className={`online-dot ${modelConfigured === false ? "offline" : ""}`} />
-            学习管家
+            学习管家智能体
             <span className="head-note">
-              本地优先 · {modelConfigured === null ? "正在检查模型" : modelConfigured ? "GLM 在线识别可用" : "手动模式可用"}
+              本地优先 · {modelConfigured === null ? "正在检查模型" : modelConfigured ? "GLM Agent 循环在线" : "手动模式可用"}
             </span>
           </div>
           <div className="message-list">
             {messages.map((message) => (
               <div className={`message-row ${message.role} gsap-message`} key={message.id}>
                 <div className="avatar">{message.role === "assistant" ? "学" : "我"}</div>
-                <div className="message-bubble">{message.text}</div>
+                <div className="message-stack">
+                  <div className="message-bubble">
+                    {message.text ? message.text : (
+                      <span className="thinking-placeholder"><span className="progress-spinner" />正在思考与行动…</span>
+                    )}
+                  </div>
+                  {message.steps?.length ? (
+                    <div className="tool-steps" aria-label="智能体行动轨迹">
+                      {message.steps.map((step) => (
+                        <span className={`tool-step ${step.status}`} key={step.id} title={step.detail ?? step.label}>
+                          {step.status === "running" ? <span className="progress-spinner" /> : step.status === "done" ? "✓" : "✕"}
+                          {step.label}
+                        </span>
+                      ))}
+                    </div>
+                  ) : null}
+                </div>
               </div>
             ))}
-            {pendingTask ? (
+            {pendingTaskConfirm && taskConfirmDraft ? (
               <div className="action-card gsap-action-card">
-                <div className="action-label">待确认操作 · DDL</div>
+                <div className="action-label">智能体请求写入 · 新任务</div>
                 <input
                   className="action-title-input"
-                  value={pendingTask.title}
-                  onChange={(event) => onPendingTaskChange((current) => current ? { ...current, title: event.target.value } : current)}
-                  aria-label="候选任务名称"
+                  value={taskConfirmDraft.title}
+                  onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, title: event.target.value } : current)}
+                  aria-label="任务名称"
                 />
                 <div className="action-edit-grid">
-                  <label><span>课程</span><select value={pendingTask.courseId} onChange={(event) => onPendingTaskChange((current) => current ? { ...current, courseId: event.target.value } : current)}><option value="">请选择课程</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
-                  <label><span>截止</span><input type="datetime-local" value={pendingTask.dueAt} onChange={(event) => onPendingTaskChange((current) => current ? { ...current, dueAt: event.target.value } : current)} /></label>
-                  <label><span>类型</span><select value={pendingTask.type} onChange={(event) => onPendingTaskChange((current) => current ? { ...current, type: event.target.value as Task["type"] } : current)}><option>DDL</option><option>考试</option><option>复习</option></select></label>
-                  <label><span>提醒</span><input value={pendingTask.reminder} onChange={(event) => onPendingTaskChange((current) => current ? { ...current, reminder: event.target.value } : current)} /></label>
+                  <label><span>课程</span><select value={taskConfirmDraft.courseId} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, courseId: event.target.value } : current)}><option value="">请选择课程</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
+                  <label><span>截止</span><input type="datetime-local" value={taskConfirmDraft.dueAt} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, dueAt: event.target.value } : current)} /></label>
+                  <label><span>类型</span><select value={taskConfirmDraft.type} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, type: event.target.value as Task["type"] } : current)}><option>DDL</option><option>考试</option><option>复习</option></select></label>
+                  <label><span>提醒</span><input value={taskConfirmDraft.reminder} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, reminder: event.target.value } : current)} /></label>
                 </div>
-                {pendingMeta ? <div className="evidence-box"><span>识别置信度 · {confidenceLabel(pendingMeta.confidence)}</span><p>{pendingMeta.evidence || "模型未给出明确依据"}</p>{pendingMeta.questions.length ? <ul>{pendingMeta.questions.map((question) => <li key={question}>{question}</li>)}</ul> : null}</div> : null}
-                <div className="action-buttons"><button className="primary-button" onClick={onConfirm}>确认并保存</button><button className="quiet-button" onClick={onCancel}>取消</button></div>
+                {confirmError ? <div className="queue-error">{confirmError}</div> : null}
+                <div className="action-buttons"><button className="primary-button" onClick={onApproveTask}>确认并保存</button><button className="quiet-button" onClick={onRejectConfirm}>取消</button></div>
               </div>
             ) : null}
-            {pendingResource ? (
-              <div className="action-card resource-action-card gsap-action-card">
-                <div className="action-label">待确认操作 · 资料入库</div>
-                <input className="action-title-input" value={pendingResource.title} onChange={(event) => onPendingResourceChange((current) => current ? { ...current, title: event.target.value } : current)} aria-label="候选资料名称" />
-                <div className="action-edit-grid">
-                  <label><span>课程</span><select value={pendingResource.courseId} onChange={(event) => onPendingResourceChange((current) => current ? { ...current, courseId: event.target.value } : current)}><option value="">请选择课程</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
-                  <label><span>资料类型</span><select value={pendingResource.type} onChange={(event) => onPendingResourceChange((current) => current ? { ...current, type: event.target.value as Resource["type"] } : current)}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select></label>
-                </div>
-                <div className="candidate-tags">{pendingResource.tags.map((tag) => <span key={tag}>{tag}</span>)}</div>
-                <div className="evidence-box"><span>识别置信度 · {confidenceLabel(pendingResource.confidence)}</span><p>{pendingResource.evidence}</p>{pendingResource.file ? <small>{pendingResource.file.name} · {formatBytes(pendingResource.file.size)} · 原文件将保存在浏览器本地</small> : null}</div>
-                <div className="action-buttons"><button className="primary-button" onClick={onConfirmResource}>确认入库</button><button className="quiet-button" onClick={onCancelResource}>取消</button></div>
-              </div>
+            {pendingPlanConfirm ? (
+              <PlanConfirmCard plan={pendingPlanConfirm} error={confirmError} onApprove={onApprovePlan} onReject={onRejectConfirm} />
             ) : null}
             <div className="gsap-queue-wrap">
             <BatchImportQueue
@@ -1030,17 +1359,16 @@ function AssistantView({
               onClearFinished={onClearFinishedImports}
             />
             </div>
-            {extracting ? <div className="extract-progress"><span className="progress-spinner" />GLM-5V-Turbo 正在提取课程、标签与 DDL…</div> : null}
             {extractError ? <div className="extract-error">{extractError}</div> : null}
           </div>
           <div className="composer">
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
-              onKeyDown={(event) => { if (event.key === "Enter" && !extracting && !batchRunning) onSend(); }}
-              placeholder="说说你想处理什么…"
+              onKeyDown={(event) => { if (event.key === "Enter" && !busy) onSend(); }}
+              placeholder="交给智能体：查 DDL、找资料、安排复习…"
               aria-label="输入学习管理需求"
-              disabled={extracting || batchRunning}
+              disabled={busy}
             />
             <input
               ref={attachmentInputRef}
@@ -1054,27 +1382,46 @@ function AssistantView({
                 event.currentTarget.value = "";
               }}
             />
-            <button className="attach-button" title="批量上传截图或课程文件" onClick={() => attachmentInputRef.current?.click()} disabled={extracting || batchRunning}>＋</button>
-            <button className="send-button" onClick={onSend} aria-label="发送" disabled={extracting || batchRunning}>{extracting || batchRunning ? "·" : "↑"}</button>
+            <button className="attach-button" title="批量上传截图或课程文件" onClick={() => attachmentInputRef.current?.click()} disabled={busy}>＋</button>
+            <button className="send-button" onClick={onSend} aria-label="发送" disabled={busy}>{busy ? "·" : "↑"}</button>
           </div>
         </div>
 
         <div className="quick-actions">
-          <button onClick={() => setInput("帮我记下这个DDL")}>＋ 录入 DDL</button>
-          <button onClick={() => onNavigate("resources")}>▣ 整理资料</button>
-          <button onClick={() => onNavigate("resources")}>⌕ 查找资料</button>
+          <button onClick={() => setInput("帮我记下这个DDL：")}>＋ 录入 DDL</button>
+          <button onClick={() => setInput("我下周有什么要交的？")}>◷ 下周截止</button>
+          <button onClick={() => setInput("帮我把数据库的课件找出来")}>⌕ 查找资料</button>
           <button onClick={() => onNavigate("review")}>✦ 生成复习计划</button>
         </div>
       </div>
 
       <aside className="dashboard-rail">
-        <div className="date-card"><span>08</span><div><b>八月</b><small>2026 · 第 32 周</small></div></div>
-        <div className="stat-row"><div><strong>{upcomingTasks.length}</strong><span>待完成任务</span></div><div><strong>{pendingCount}</strong><span>待整理资料</span></div><div><strong>{completedCount}</strong><span>本周完成</span></div></div>
+        <div className="date-card"><span>{String(today.getDate()).padStart(2, "0")}</span><div><b>{today.getMonth() + 1}月</b><small>{today.getFullYear()} · 第 {weekNumber(today)} 周</small></div></div>
+        <div className="stat-grid"><div><strong>{upcomingTasks.length}</strong><span>待完成任务</span></div><div><strong>{pendingCount}</strong><span>待整理资料</span></div><div><strong>{completedCount}</strong><span>本周完成</span></div></div>
         <div className="rail-section"><div className="section-heading"><span>接下来</span><button onClick={() => onNavigate("tasks")}>查看全部 →</button></div>
           {upcomingTasks.slice(0, 3).map((task) => <TaskMini key={task.id} task={task} course={courseMap.get(task.courseId)} />)}
         </div>
-        <div className="tip-card"><span className="tip-kicker">一个小建议</span><p>先把散落的通知交给我，确认后再写入你的学习空间。</p><span className="tip-line" /></div>
+        <div className="tip-card"><span className="tip-kicker">智能体说明</span><p>我会自己调用工具查证后再回答；创建任务和复习计划前，会先弹出确认卡片等你点头。</p><span className="tip-line" /></div>
       </aside>
+    </div>
+  );
+}
+
+function PlanConfirmCard({ plan, error, onApprove, onReject }: { plan: PlanConfirmState; error: string; onApprove: () => void; onReject: () => void }) {
+  return (
+    <div className="action-card gsap-action-card">
+      <div className="action-label">智能体请求写入 · 复习计划（{plan.courseName || "未指定课程"}）</div>
+      <div className="plan-session-list">
+        {plan.sessions.map((session) => (
+          <div className="plan-item" key={`${session.date}-${session.title}`}>
+            <time>{formatDate(session.date)}</time>
+            <div><strong>{session.title}</strong><span>将创建为复习任务</span></div>
+            <b>{session.durationMinutes}分钟</b>
+          </div>
+        ))}
+      </div>
+      {error ? <div className="queue-error">{error}</div> : null}
+      <div className="action-buttons"><button className="primary-button" onClick={onApprove}>确认保存</button><button className="quiet-button" onClick={onReject}>取消</button></div>
     </div>
   );
 }
@@ -1169,20 +1516,22 @@ function TasksView({ tasks, courseMap, courses, showForm, setShowForm, title, se
   </div>;
 }
 
-function ReviewView({ courses, resources }: { courses: Course[]; resources: Resource[] }) {
+function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprovePlan, onRejectPlan }: { courses: Course[]; running: boolean; plan: PlanConfirmState | null; confirmError: string; onGenerate: (courseId: string, examAt: string, availability: string) => void; onApprovePlan: () => void; onRejectPlan: () => void; }) {
   const [courseId, setCourseId] = useState(courses[0]?.id ?? "");
+  const [examAt, setExamAt] = useState(() => toLocalInputValue(new Date(Date.now() + 7 * 86_400_000).toISOString()));
   const [availability, setAvailability] = useState("工作日晚上 19:00–21:00");
-  const [generated, setGenerated] = useState(false);
+  const [justSaved, setJustSaved] = useState(false);
   const course = courses.find((item) => item.id === courseId);
-  const count = resources.filter((resource) => resource.courseId === courseId).length;
-  return <div className="page-view"><PageHeader eyebrow="REVIEW STUDIO" title="复习计划" description="先告诉我你什么时候有空，再把资料排成可以完成的节奏。" action={<span className="soft-badge">AI 草案 · 需确认</span>} />
-    <div className="review-layout"><div className="review-form-card"><div className="card-kicker">STEP 01 · 先说你的时间</div><h2>为哪门课准备？</h2><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label>考试或复习截止时间<input type="datetime-local" defaultValue="2026-08-20T09:00" /></label><label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label><div className="availability-chips"><button onClick={() => setAvailability("工作日晚上 19:00–21:00")}>工作日晚上</button><button onClick={() => setAvailability("周末上午 09:00–12:00")}>周末上午</button><button onClick={() => setAvailability("每天 60 分钟")}>每天1小时</button></div><button className="primary-button wide" onClick={() => setGenerated(true)}>生成计划草案</button><small className="form-help">当前课程已有 {count} 份资料，生成前还会参考“待复习”状态。</small></div><div className="plan-preview-card">{generated ? <><div className="plan-head"><div><div className="card-kicker">STEP 02 · 草案</div><h2>{course?.name ?? "课程"} · 复习节奏</h2></div><span className="soft-badge">{availability}</span></div><PlanItem date="8月13日" title="梳理第一章核心概念" duration="45分钟" /><PlanItem date="8月14日" title="完成一组基础题" duration="45分钟" /><PlanItem date="8月15日" title="整理错题与公式" duration="30分钟" /><div className="plan-actions"><button className="primary-button">确认保存</button><button className="quiet-button" onClick={() => setGenerated(false)}>重新生成</button></div></> : <div className="empty-plan"><div className="plan-orbit">✦</div><h2>计划会出现在这里</h2><p>选择课程并告诉我你有空的时间，先生成一份可调整的草案。</p></div>}</div></div>
+
+  return <div className="page-view"><PageHeader eyebrow="REVIEW STUDIO" title="复习计划" description="智能体先查询你的真实任务和资料，再把计划排成可以完成的节奏。" action={<span className="soft-badge">Agent 生成 · 需确认</span>} />
+    <div className="review-layout"><div className="review-form-card"><div className="card-kicker">STEP 01 · 先说你的时间</div><h2>为哪门课准备？</h2><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label>考试或复习截止时间<input type="datetime-local" value={examAt} onChange={(event) => setExamAt(event.target.value)} /></label><label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label><div className="availability-chips"><button onClick={() => setAvailability("工作日晚上 19:00–21:00")}>工作日晚上</button><button onClick={() => setAvailability("周末上午 09:00–12:00")}>周末上午</button><button onClick={() => setAvailability("每天 60 分钟")}>每天1小时</button></div><button className="primary-button wide" disabled={running || !courseId} onClick={() => { setJustSaved(false); onGenerate(courseId, examAt, availability); }}>{running ? "智能体规划中…" : "生成计划草案"}</button><small className="form-help">智能体会先查询「{course?.name ?? "课程"}」的未完成任务和已有资料，再制定计划。</small></div><div className="plan-preview-card">{running ? <div className="empty-plan"><span className="progress-spinner" /><h2>智能体正在规划</h2><p>正在查询任务与资料，并把复习安排拆到具体日期。</p></div> : plan ? <><div className="plan-head"><div><div className="card-kicker">STEP 02 · 草案待确认</div><h2>{plan.courseName || course?.name || "课程"} · 复习节奏</h2></div><span className="soft-badge">{availability}</span></div>{plan.sessions.map((session) => <PlanItem key={`${session.date}-${session.title}`} date={formatShortDate(session.date)} title={session.title} duration={`${session.durationMinutes}分钟`} />)}{confirmError ? <div className="queue-error">{confirmError}</div> : null}<div className="plan-actions"><button className="primary-button" onClick={() => { onApprovePlan(); setJustSaved(true); }}>确认保存</button><button className="quiet-button" onClick={onRejectPlan}>放弃草案</button></div></> : justSaved ? <div className="empty-plan"><div className="plan-orbit">✓</div><h2>计划已保存</h2><p>复习安排已写入任务中心，到点会在任务列表中出现。</p></div> : <div className="empty-plan"><div className="plan-orbit">✦</div><h2>计划会出现在这里</h2><p>选择课程并告诉我你有空的时间，智能体会基于真实数据生成一份可确认的草案。</p></div>}</div></div>
   </div>;
 }
 
 function PlanItem({ date, title, duration }: { date: string; title: string; duration: string }) { return <div className="plan-item"><time>{date}</time><div><strong>{title}</strong><span>关联资料 · 可调整</span></div><b>{duration}</b></div>; }
 
-function DataView({ snapshot, onExport, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; onExport: () => void; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
+function DataView({ snapshot, profile, onSaveProfile, onExport, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
+  const [draft, setDraft] = useState<UserProfile>(profile);
   return (
     <div className="page-view">
       <PageHeader eyebrow="LOCAL SPACE" title="数据管理" description="你的学习空间默认留在当前浏览器里。" action={<span className="local-badge"><span className="local-indicator" />本地存储正常</span>} />
@@ -1195,15 +1544,27 @@ function DataView({ snapshot, onExport, onImport, onFile, onReset, inputRef }: {
           <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
         </div>
         <div className="data-card">
+          <div className="card-kicker">AGENT MEMORY</div>
+          <h3>我的画像 · 智能体长期记忆</h3>
+          <p>智能体每一轮思考、制定计划时都会参考这些信息。也可以在对话中直接告诉它，它会自己记住。</p>
+          <div className="form-grid profile-form">
+            <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="怎么称呼你" />
+            <input value={draft.studyTime} onChange={(event) => setDraft({ ...draft, studyTime: event.target.value })} placeholder="方便学习的时间，如：工作日晚上" />
+            <input value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="本学期目标，如：数据库期末 90 分" />
+          </div>
+          <div className="data-actions"><button className="primary-button" onClick={() => onSaveProfile(draft)}>保存画像</button></div>
+        </div>
+        <div className="data-card">
           <div className="card-kicker">CURRENT STATUS</div>
-          <h3>Sprint 2 智能入库</h3>
+          <h3>Sprint 3 智能体闭环</h3>
           <ul className="check-list">
+            <li><span>✓</span>Agent 循环：多步推理 + 工具调用</li>
+            <li><span>✓</span>写入操作先弹确认卡片</li>
+            <li><span>✓</span>主动巡检临近 DDL 并先开口</li>
+            <li><span>✓</span>长期记忆画像注入每轮对话</li>
             <li><span>✓</span>刷新页面后结构化数据仍保留</li>
             <li><span>✓</span>原始文件保存在 IndexedDB</li>
-            <li><span>✓</span>文本、截图和文件名智能提取</li>
-            <li><span>✓</span>PDF、图片、Word、PPTX 本地预览</li>
-            <li><span>✓</span>多文件队列、100MB/500MB 校验</li>
-            <li><span>✓</span>逐项确认、取消、失败与重试</li>
+            <li><span>✓</span>多文件队列、逐项确认入库</li>
             <li><span>✓</span>无网络可浏览、编辑与备份</li>
           </ul>
           <button className="text-button" onClick={onReset}>恢复示例数据</button>
@@ -1226,22 +1587,36 @@ function isPdfImportFile(file: File) {
   return file.type === "application/pdf" || /\.pdf$/i.test(file.name);
 }
 
-function stripExtension(fileName: string) {
-  return fileName.replace(/\.[^.]+$/, "").trim() || fileName;
+function asString(value: unknown) {
+  return typeof value === "string" ? value : "";
 }
 
-function guessResourceType(fileName: string): Resource["type"] {
-  const name = fileName.toLowerCase();
-  if (/作业|实验|homework|assignment/.test(name)) return "作业";
-  if (/通知|公告|notice|screenshot|截图/.test(name)) return "通知";
-  if (/试卷|真题|exam|test/.test(name)) return "试卷";
-  if (/笔记|note/.test(name)) return "笔记";
-  if (/\.pptx?$|课件|讲义|slide/.test(name)) return "课件";
-  return "其他";
+function toLocalInputValue(value: string) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return value.slice(0, 16);
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function confidenceLabel(confidence: Confidence) {
-  return confidence === "high" ? "高" : confidence === "medium" ? "中" : "低";
+function sanitizePlanSessions(value: unknown): PlanSession[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .map((item) => {
+      if (typeof item !== "object" || item === null) return null;
+      const record = item as Record<string, unknown>;
+      const title = typeof record.title === "string" ? record.title.trim() : "";
+      const date = typeof record.date === "string" ? record.date : "";
+      const durationMinutes = typeof record.durationMinutes === "number" && record.durationMinutes > 0 ? Math.round(record.durationMinutes) : 45;
+      if (!title || !date || Number.isNaN(new Date(date).getTime())) return null;
+      return { date, title, durationMinutes };
+    })
+    .filter((session): session is PlanSession => session !== null)
+    .slice(0, 14);
+}
+
+function weekNumber(date: Date) {
+  const start = new Date(date.getFullYear(), 0, 1);
+  return Math.max(1, Math.ceil(((date.getTime() - start.getTime()) / 86_400_000 + start.getDay() + 1) / 7));
 }
 
 function formatBytes(size: number) {
@@ -1253,3 +1628,4 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+

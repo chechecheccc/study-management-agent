@@ -1,6 +1,6 @@
 # 学习管家项目进度与文件说明
 
-> 更新时间：2026-08-16
+> 更新时间：2026-09-09
 >
 > 本文按当前 Git 仓库中的源码编写。`node_modules`、`.next`、`dist`、`.vinext`、`.wrangler` 等生成目录不纳入说明。
 
@@ -55,6 +55,22 @@
 - 最近一次本地修复提交为 `fb23b7c`，内容是修复 EdgeOne PDF worker 加载。
 - 由于当前开发环境连接 GitHub 不稳定，`fb23b7c` 在本地已提交，但需要网络恢复后执行 `git push github main` 才能同步到 GitHub。
 
+#### 3. Sprint 3：Agent 化改造（本轮新增）
+
+- 删除关键词正则路由，所有对话统一进入 Agent 循环：感知 → 模型决策 → 工具执行 → 观察 → 再决策，最多 8 步安全停止。
+- 新增 `app/agent/` 纯逻辑层（不依赖 React，可单元测试）：
+  - `loop.ts`：Agent 循环（async generator 逐事件输出，UI 实时展示思考轨迹）。
+  - `tools.ts`：8 个工具的注册表（list_courses / list_tasks / search_resources / create_task / update_task_status / save_review_plan / update_profile / navigate），schema 同时用于 function calling 与前端确认卡片。
+  - `protocol.ts`：前后端消息协议与清洗（长度上限、非法角色过滤）。
+  - `prompts.ts`：系统提示词，注入当前时间与用户长期记忆。
+  - `memory.ts`：用户画像（称呼/作息/目标），localStorage 持久化，对话中可由模型调用 update_profile 更新。
+  - `triggers.ts`：主动巡检（逾期 / 3 天内截止 / 未整理资料），每天首次打开时智能体先开口。
+- 新增 `/api/agent/step` 服务端代理：GLM function calling，密钥不出服务端；沿用同源校验、大小限制、超时与错误约定。
+- 人在回路升级：create_task 与 save_review_plan 触发确认卡片（可编辑后确认、可取消），取消结果回喂模型避免重复尝试。
+- 复习计划从写死的假数据改为 Agent 基于真实任务与资料生成，确认后批量写入任务中心。
+- 数据管理页新增"我的画像"编辑；备份文件包含画像。
+- 新增 `tests/agent-core.test.mjs`：9 个用例覆盖循环、确认门、取消、最大步数熔断、未知工具、协议清洗、触发器、画像注入。
+
 ### 当前未完成或需要后续完善
 
 - 尚未建立真实账号、登录和多用户隔离。
@@ -62,7 +78,7 @@
 - 尚未实现真正的后台提醒、浏览器通知、邮件通知或定时任务。
 - 当前任务中的“提醒”是任务字段和展示规则，不是自动触发的通知服务。
 - 当前源码没有真正的 iCal、CSV、Markdown 导出实现；README 中的 iCal 描述需要后续实现或修正。
-- 当前复习计划页面生成的是前端演示草案，计划内容是固定示例，确认保存按钮尚未接入任务写入逻辑。
+- 复习计划草案暂不支持逐项编辑单个 session，只能整体确认或放弃。
 - 旧版 `.doc` 和 `.ppt` 暂不支持浏览器直接预览，建议转换为 `.docx` 和 `.pptx`。
 - 尚未实现跨设备同步、云端备份、权限管理和数据加密存储。
 
@@ -176,6 +192,7 @@ npm run build     # 执行 Vinext 生产构建
 npx next build    # 按 EdgeOne 当前配置验证 Next 构建
 npm run lint      # ESLint 检查
 npm test          # 生产构建 + 自动化测试
+npm run test:agent # Agent 核心循环单元测试（无需构建）
 npm run db:generate  # 生成 Drizzle 迁移，当前数据库 schema 为空
 ```
 
@@ -188,3 +205,4 @@ npm run db:generate  # 生成 Drizzle 迁移，当前数据库 schema 为空
 3. 增加浏览器通知或定时提醒机制。
 4. 再决定是否引入账号系统和云端数据库；如果引入，需要重新设计多用户隔离、文件存储和隐私策略。
 5. 最后增加 CSV/Markdown 导出和跨设备备份。
+

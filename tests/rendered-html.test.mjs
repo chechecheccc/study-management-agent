@@ -45,7 +45,7 @@ test("the product enforces the agreed Sprint 1 boundaries", async () => {
   const [page, css, prototype] = await Promise.all([
     read("app/page.tsx"),
     read("app/globals.css"),
-    read("../原型设计与开发拆解.md"),
+    read("原型设计与开发拆解.md"),
   ]);
 
   assert.match(page, /确认并保存/);
@@ -158,3 +158,4 @@ test("full-screen study intro is wired to the app entry", async () => {
   assert.match(css, /\.intro-grid \{/);
   assert.match(css, /\.intro-core \{/);
 });
+

@@ -400,3 +400,20 @@ h1 em { font-style: normal; color: var(--coral-dark); }
   *, *::before, *::after { scroll-behavior: auto !important; }
   .ambient-glow { display: none; }
 }
+
+/* ---------- Sprint 3: Agent 循环 UI ---------- */
+.message-stack { display: flex; flex-direction: column; gap: 6px; max-width: 78%; }
+.message-stack .message-bubble { max-width: 100%; }
+.thinking-placeholder { display: inline-flex; align-items: center; gap: 8px; color: var(--muted); font-size: 12px; }
+.tool-steps { display: flex; flex-wrap: wrap; gap: 6px; }
+.tool-step { display: inline-flex; align-items: center; gap: 6px; border-radius: 999px; border: 1px solid var(--line); background: var(--surface); color: var(--muted); font-size: 11px; padding: 4px 10px; }
+.tool-step.running { color: #5f7a5c; border-color: #cfdcc9; background: #f0f5ec; }
+.tool-step.done { color: #4f6b4c; border-color: #cfe0cb; background: #eef4ea; }
+.tool-step.failed { color: #9a5448; border-color: #e8c8bf; background: #fae7e1; }
+.tool-step .progress-spinner { width: 9px; height: 9px; border-width: 1.5px; }
+.plan-session-list { margin-top: 10px; border-top: 1px solid #f0e4de; }
+.plan-session-list .plan-item { padding: 10px 0; border-bottom: 1px solid #f4ece8; }
+.profile-form { margin-top: 12px; grid-template-columns: 1fr; }
+@media (max-width: 720px) {
+  .message-stack { max-width: 88%; }
+}
