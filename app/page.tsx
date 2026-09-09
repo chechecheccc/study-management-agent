@@ -724,17 +724,19 @@ export default function Home() {
                 controller.signal,
               );
             } else if (extraction.previewImages.length) {
-              const pageResults: ExtractResult[] = [];
-              for (const [index, imageDataUrl] of extraction.previewImages.entries()) {
-                pageResults.push(await requestExtraction(
-                  {
-                    mode: "image",
-                    imageDataUrl,
-                    fileName: `${item.file.name}（第${index + 1}页）`,
-                  },
-                  controller.signal,
-                ));
-              }
+              // 扫描版 PDF 的逐页视觉识别改为并行，3 页延迟从 3x 降到 1x
+              const pageResults = await Promise.all(
+                extraction.previewImages.map((imageDataUrl, index) =>
+                  requestExtraction(
+                    {
+                      mode: "image",
+                      imageDataUrl,
+                      fileName: `${item.file.name}（第${index + 1}页）`,
+                    },
+                    controller.signal,
+                  ),
+                ),
+              );
               result = mergeExtractResults(pageResults);
             } else {
               result = await requestExtraction(
@@ -1628,4 +1630,5 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
 

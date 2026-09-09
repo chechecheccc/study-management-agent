@@ -84,6 +84,8 @@ export async function POST(request: Request) {
         ],
         tools: toolSchemasForModel(),
         tool_choice: "auto",
+        // 工具调用循环追求响应速度，默认关闭深度思考；需要更强推理时设 GLM_AGENT_THINKING=enabled
+        thinking: { type: process.env.GLM_AGENT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" },
         temperature: 0.3,
         max_tokens: 2048,
         stream: false,
@@ -189,4 +191,5 @@ function jsonResponse(body: unknown, status = 200) {
 function errorResponse(code: string, message: string, status: number, fallback = false) {
   return jsonResponse({ ok: false, error: { code, message }, fallback }, status);
 }
+
 
