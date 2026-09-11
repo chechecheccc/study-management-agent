@@ -34,7 +34,10 @@ import { runAgentLoop } from "./agent/loop";
 import type { ConfirmationDecision, HistoryMessage, ToolExecutionResult } from "./agent/loop";
 import type { AgentStepResponse, AgentToolCall, AgentWireMessage } from "./agent/protocol";
 import { getToolSpec } from "./agent/tools";
-import { loadProfile, saveProfile, sanitizeProfile } from "./agent/memory";
+import { extractSearchableText } from "./lib/content-extract";
+import { buildICalendar } from "./lib/ical";
+import { addProfileNote, loadProfile, saveProfile, sanitizeProfile } from "./agent/memory";
+import { computeDueReminders, formatMinutesLeft, loadFiredReminders, saveFiredReminders } from "./agent/reminders";
 import type { UserProfile } from "./agent/memory";
 import { buildProactiveFallback, buildProactiveGoal, computeProactiveSignals } from "./agent/triggers";
 
@@ -131,7 +134,7 @@ export default function Home() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskCourse, setTaskCourse] = useState("");
   const [taskDueAt, setTaskDueAt] = useState("2026-08-12T23:59");
-  const [profile, setProfile] = useState<UserProfile>(() => (typeof window === "undefined" ? { name: "", studyTime: "", goal: "" } : loadProfile()));
+  const [profile, setProfile] = useState<UserProfile>(() => (typeof window === "undefined" ? { name: "", studyTime: "", goal: "", notes: [] } : loadProfile()));
   const [pendingTaskConfirm, setPendingTaskConfirm] = useState<AgentToolCall | null>(null);
   const [taskConfirmDraft, setTaskConfirmDraft] = useState<TaskConfirmDraft | null>(null);
   const [pendingPlanConfirm, setPendingPlanConfirm] = useState<PlanConfirmState | null>(null);
@@ -140,7 +143,7 @@ export default function Home() {
   const attachmentInputRef = useRef<HTMLInputElement>(null);
   const batchRunningRef = useRef(false);
   const agentRunningRef = useRef(false);
-  const agentHistoryRef = useRef<HistoryMessage[]>([]);
+  const agentHistoryRef = useRef<HistoryMessage[]>(loadAgentHistory());
   const confirmResolverRef = useRef<((decision: ConfirmationDecision) => void) | null>(null);
   const cancelledImportIdsRef = useRef(new Set<string>());
   const importAbortControllersRef = useRef(new Map<string, AbortController>());
@@ -375,7 +378,7 @@ export default function Home() {
         if (statusFilter) resources = resources.filter((resource) => resource.status === statusFilter);
         if (keyword) {
           resources = resources.filter((resource) =>
-            [resource.title, resource.fileName, courseNameOf(resource.courseId), ...resource.tags]
+            [resource.title, resource.fileName, courseNameOf(resource.courseId), ...resource.tags, resource.contentText]
               .filter(Boolean)
               .join(" ")
               .toLowerCase()
@@ -389,6 +392,8 @@ export default function Home() {
           tags: resource.tags,
           status: resource.status,
           fileName: resource.fileName ?? null,
+          hasContent: Boolean(resource.contentText),
+          contentExcerpt: resource.contentText ? contentExcerpt(resource.contentText, keyword) : null,
         }));
         return { ok: true, summary: `找到 ${data.length} 份资料`, data };
       }
@@ -401,6 +406,54 @@ export default function Home() {
         if (keyword) setSearch(keyword);
         setView(target as View);
         return { ok: true, summary: `已打开「${viewLabels[target as View]}」页面` };
+      }
+      case "read_resource": {
+        const title = asString(args.title).trim();
+        const resource =
+          snap.resources.find((candidate) => candidate.title === title) ??
+          snap.resources.find((candidate) => candidate.title.includes(title) || (title && title.includes(candidate.title))) ??
+          snap.resources.find((candidate) => candidate.fileName?.includes(title));
+        if (!resource) return { ok: false, summary: `没有找到标题包含「${title}」的资料。` };
+        if (!resource.contentText) {
+          return { ok: true, summary: `「${resource.title}」没有已提取的正文内容（可能是手动卡片或尚未入库原文件）。`, data: { title: resource.title, hasContent: false } };
+        }
+        return {
+          ok: true,
+          summary: `已阅读「${resource.title}」`,
+          data: {
+            title: resource.title,
+            course: courseNameOf(resource.courseId),
+            type: resource.type,
+            content: resource.contentText.slice(0, 3000),
+          },
+        };
+      }
+      case "remember_fact": {
+        const fact = asString(args.fact).trim();
+        if (!fact) return { ok: false, summary: "没有提供要记住的内容。" };
+        const next = addProfileNote(profileRef.current, fact);
+        profileRef.current = next;
+        setProfile(next);
+        saveProfile(next);
+        return { ok: true, summary: `已记入长期记忆（当前共 ${next.notes.length} 条笔记）` };
+      }
+      case "update_task": {
+        const taskTitle = asString(args.taskTitle).trim();
+        const task =
+          snap.tasks.find((candidate) => candidate.title === taskTitle) ??
+          snap.tasks.find((candidate) => candidate.title.includes(taskTitle) || (taskTitle && taskTitle.includes(candidate.title)));
+        if (!task) return { ok: false, summary: `没有找到标题包含「${taskTitle}」的任务。` };
+        const patch: Partial<Task> = {};
+        if (asString(args.title).trim()) patch.title = asString(args.title).trim();
+        if (asString(args.dueAt).trim()) patch.dueAt = toLocalInputValue(asString(args.dueAt));
+        if (["高", "中", "低"].includes(asString(args.priority))) patch.priority = asString(args.priority) as Task["priority"];
+        if (["DDL", "考试", "复习"].includes(asString(args.type))) patch.type = asString(args.type) as Task["type"];
+        if (!Object.keys(patch).length) return { ok: false, summary: "没有提供要修改的内容。" };
+        setSnapshot((current) => ({
+          ...current,
+          tasks: current.tasks.map((candidate) => (candidate.id === task.id ? { ...candidate, ...patch } : candidate)),
+        }));
+        return { ok: true, summary: `已更新「${patch.title ?? task.title}」`, data: patch };
       }
       case "update_profile": {
         const patch: Partial<UserProfile> = {};
@@ -491,6 +544,33 @@ export default function Home() {
         setPendingTaskConfirm(call);
         return;
       }
+      if (call.name === "update_task") {
+        const taskTitle = asString(call.arguments.taskTitle).trim();
+        const snap = snapshotRef.current;
+        const task =
+          snap.tasks.find((candidate) => candidate.title === taskTitle) ??
+          snap.tasks.find((candidate) => candidate.title.includes(taskTitle) || (taskTitle && taskTitle.includes(candidate.title)));
+        if (!task) {
+          // 找不到任务时直接放行，让执行器返回明确的失败信息
+          resolve({ approved: true });
+          return;
+        }
+        confirmResolverRef.current = resolve;
+        const priority = asString(call.arguments.priority);
+        const type = asString(call.arguments.type);
+        const proposedDue = asString(call.arguments.dueAt).trim();
+        setTaskConfirmDraft({
+          title: asString(call.arguments.title).trim() || task.title,
+          courseId: task.courseId,
+          type: (["DDL", "考试", "复习"].includes(type) ? type : task.type) as Task["type"],
+          dueAt: proposedDue ? toLocalInputValue(proposedDue) : task.dueAt,
+          priority: (["高", "中", "低"].includes(priority) ? priority : task.priority) as Task["priority"],
+          reminder: task.reminder,
+        });
+        setConfirmError("");
+        setPendingTaskConfirm(call);
+        return;
+      }
       if (call.name === "save_review_plan") {
         confirmResolverRef.current = resolve;
         setPendingPlanConfirm({
@@ -516,6 +596,19 @@ export default function Home() {
     if (!taskConfirmDraft) return;
     if (!taskConfirmDraft.title.trim() || !taskConfirmDraft.courseId || !taskConfirmDraft.dueAt) {
       setConfirmError("请补充任务名称、课程和截止时间后再确认。");
+      return;
+    }
+    if (pendingTaskConfirm?.name === "update_task") {
+      settleConfirmation({
+        approved: true,
+        arguments: {
+          taskTitle: asString(pendingTaskConfirm.arguments.taskTitle),
+          title: taskConfirmDraft.title.trim(),
+          type: taskConfirmDraft.type,
+          dueAt: new Date(taskConfirmDraft.dueAt).toISOString(),
+          priority: taskConfirmDraft.priority,
+        },
+      });
       return;
     }
     settleConfirmation({
@@ -605,6 +698,7 @@ export default function Home() {
         { role: "assistant", content: finalText },
       ];
       agentHistoryRef.current = nextHistory.slice(-12);
+      saveAgentHistory(agentHistoryRef.current);
       agentRunningRef.current = false;
       setAgentRunning(false);
     }
@@ -656,6 +750,30 @@ export default function Home() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [ready, modelConfigured]);
+
+  // 真正的定时提醒：每 60 秒按任务提醒规则巡检，触发对话内提醒 + 桌面通知。
+  useEffect(() => {
+    if (!ready) return;
+    const check = () => {
+      const fired = loadFiredReminders();
+      const due = computeDueReminders(snapshotRef.current.tasks, new Date(), fired);
+      if (!due.length) return;
+      due.forEach((reminder) => fired.add(reminder.key));
+      saveFiredReminders(fired);
+      due.forEach((reminder) => {
+        const text = reminder.minutesLeft > 0
+          ? `⏰ 提醒：「${reminder.title}」（${reminder.type}）还有 ${formatMinutesLeft(reminder.minutesLeft)} 截止。需要我帮你安排复习或调整计划吗？`
+          : `⏰ 「${reminder.title}」（${reminder.type}）已到截止时间。完成后告诉我，我帮你标记；没完成的话可以帮你顺延。`;
+        addAssistantMessage(text);
+        if (typeof Notification !== "undefined" && Notification.permission === "granted") {
+          new Notification("学习管家提醒", { body: `${reminder.title} · ${reminder.offsetLabel}` });
+        }
+      });
+    };
+    check();
+    const timer = window.setInterval(check, 60_000);
+    return () => window.clearInterval(timer);
+  }, [ready]);
 
   // ---------- 文件智能入库流水线（由用户上传触发，识别结果仍需确认后入库） ----------
 
@@ -716,8 +834,10 @@ export default function Home() {
 
         try {
           let result: ExtractResult;
+          let contentText = "";
           if (isPdfImportFile(item.file)) {
             const extraction = await extractPdfForImport(item.file, controller.signal);
+            contentText = extraction.text.slice(0, 20000);
             if (extraction.text) {
               result = await requestExtraction(
                 { mode: "text", text: extraction.text, fileName: item.file.name },
@@ -752,6 +872,7 @@ export default function Home() {
               controller.signal,
             );
           } else {
+            contentText = await extractSearchableText(item.file);
             result = await requestExtraction(
               { mode: "filename", fileName: item.file.name },
               controller.signal,
@@ -763,6 +884,7 @@ export default function Home() {
           updateImportQueueItem(item.id, (current) => ({
             ...current,
             ...draft,
+            contentText: (contentText || result.summary).slice(0, 20000),
             status: "awaiting_confirmation",
             error: undefined,
             failureKind: undefined,
@@ -902,6 +1024,7 @@ export default function Home() {
         fileId: fileRecord.id,
         fileSize: fileRecord.size,
         mimeType: fileRecord.type,
+        contentText: item.contentText?.slice(0, 20000) || undefined,
       };
       const task = item.includeTask && item.taskDraft
         ? { ...item.taskDraft, id: makeId("task") }
@@ -1039,6 +1162,30 @@ export default function Home() {
     const next = demoSnapshot();
     setSnapshot(next);
     addAssistantMessage("示例数据已恢复。你可以在此基础上继续添加自己的课程、资料和任务。");
+  };
+
+  const exportICalendar = () => {
+    const blob = new Blob([buildICalendar(snapshot)], { type: "text/calendar;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `学习管家日历-${new Date().toISOString().slice(0, 10)}.ics`;
+    link.click();
+    URL.revokeObjectURL(url);
+    addAssistantMessage("日历文件已导出，导入系统日历后，DDL 和复习安排会出现在你的日历应用里。");
+  };
+
+  const enableNotifications = async () => {
+    if (typeof Notification === "undefined") {
+      addAssistantMessage("当前浏览器不支持桌面通知，我会在对话列表里提醒你。");
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    addAssistantMessage(
+      permission === "granted"
+        ? "桌面提醒已开启。任务临近截止时（按提醒规则：提前 3 天、1 天、2 小时），我会弹出系统通知。"
+        : "没有获得通知权限。你仍会在对话里收到提醒；想开桌面通知可以在浏览器设置里允许。",
+    );
   };
 
   return (
@@ -1198,6 +1345,8 @@ export default function Home() {
               profile={profile}
               onSaveProfile={(next) => { const cleaned = sanitizeProfile(next); setProfile(cleaned); saveProfile(cleaned); addAssistantMessage("你的画像已更新，智能体之后的每一轮思考都会记住。 "); }}
               onExport={exportBackup}
+              onExportICal={exportICalendar}
+              onEnableNotifications={enableNotifications}
               onImport={() => importInputRef.current?.click()}
               onFile={importBackup}
               onReset={resetDemo}
@@ -1325,7 +1474,7 @@ function AssistantView({
             ))}
             {pendingTaskConfirm && taskConfirmDraft ? (
               <div className="action-card gsap-action-card">
-                <div className="action-label">智能体请求写入 · 新任务</div>
+                <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "智能体请求写入 · 修改任务" : "智能体请求写入 · 新任务"}</div>
                 <input
                   className="action-title-input"
                   value={taskConfirmDraft.title}
@@ -1532,7 +1681,7 @@ function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprov
 
 function PlanItem({ date, title, duration }: { date: string; title: string; duration: string }) { return <div className="plan-item"><time>{date}</time><div><strong>{title}</strong><span>关联资料 · 可调整</span></div><b>{duration}</b></div>; }
 
-function DataView({ snapshot, profile, onSaveProfile, onExport, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
+function DataView({ snapshot, profile, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
   const [draft, setDraft] = useState<UserProfile>(profile);
   return (
     <div className="page-view">
@@ -1543,7 +1692,7 @@ function DataView({ snapshot, profile, onSaveProfile, onExport, onImport, onFile
           <h2>这是你的个人学习空间</h2>
           <p>课程、资料、任务和对话数据不会自动上传云端。使用备份文件可以在浏览器或设备之间迁移。</p>
           <div className="data-stats"><div><strong>{snapshot.courses.length}</strong><span>门课程</span></div><div><strong>{snapshot.resources.length}</strong><span>份资料</span></div><div><strong>{snapshot.tasks.length}</strong><span>条任务</span></div></div>
-          <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
+          <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><button className="quiet-button" onClick={onExportICal}>导出日历 (.ics)</button><button className="quiet-button" onClick={onEnableNotifications}>开启桌面提醒</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
         </div>
         <div className="data-card">
           <div className="card-kicker">AGENT MEMORY</div>
@@ -1558,16 +1707,16 @@ function DataView({ snapshot, profile, onSaveProfile, onExport, onImport, onFile
         </div>
         <div className="data-card">
           <div className="card-kicker">CURRENT STATUS</div>
-          <h3>Sprint 3 智能体闭环</h3>
+          <h3>Sprint 4 完整智能体能力</h3>
           <ul className="check-list">
             <li><span>✓</span>Agent 循环：多步推理 + 工具调用</li>
+            <li><span>✓</span>资料正文检索：入库文件内容可读可问</li>
+            <li><span>✓</span>定时提醒：对话提醒 + 桌面通知</li>
+            <li><span>✓</span>跨会话记忆：对话历史 + 记忆笔记</li>
+            <li><span>✓</span>计划可调整：update_task 顺延与修改</li>
             <li><span>✓</span>写入操作先弹确认卡片</li>
             <li><span>✓</span>主动巡检临近 DDL 并先开口</li>
-            <li><span>✓</span>长期记忆画像注入每轮对话</li>
-            <li><span>✓</span>刷新页面后结构化数据仍保留</li>
-            <li><span>✓</span>原始文件保存在 IndexedDB</li>
-            <li><span>✓</span>多文件队列、逐项确认入库</li>
-            <li><span>✓</span>无网络可浏览、编辑与备份</li>
+            <li><span>✓</span>iCal 日历导出</li>
           </ul>
           <button className="text-button" onClick={onReset}>恢复示例数据</button>
         </div>
@@ -1621,6 +1770,44 @@ function weekNumber(date: Date) {
   return Math.max(1, Math.ceil(((date.getTime() - start.getTime()) / 86_400_000 + start.getDay() + 1) / 7));
 }
 
+const HISTORY_KEY = "study-agent-history";
+
+function loadAgentHistory(): HistoryMessage[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(HISTORY_KEY);
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    if (!Array.isArray(parsed)) return [];
+    return parsed
+      .filter((item): item is HistoryMessage =>
+        typeof item === "object" && item !== null
+        && ((item as HistoryMessage).role === "user" || (item as HistoryMessage).role === "assistant")
+        && typeof (item as HistoryMessage).content === "string",
+      )
+      .slice(-12);
+  } catch {
+    return [];
+  }
+}
+
+function saveAgentHistory(history: HistoryMessage[]) {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-12)));
+  } catch {
+    // 存储失败不影响对话
+  }
+}
+
+function contentExcerpt(contentText: string, keyword: string) {
+  const text = contentText.replace(/\s+/g, " ").trim();
+  if (!keyword) return text.slice(0, 160);
+  const index = text.toLowerCase().indexOf(keyword);
+  if (index < 0) return text.slice(0, 160);
+  const start = Math.max(0, index - 60);
+  return `${start > 0 ? "…" : ""}${text.slice(start, index + keyword.length + 100)}${index + keyword.length + 100 < text.length ? "…" : ""}`;
+}
+
 function formatBytes(size: number) {
   if (size < 1024) return `${size} B`;
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
@@ -1630,5 +1817,10 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
 
 

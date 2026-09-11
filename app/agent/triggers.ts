@@ -63,7 +63,7 @@ export function buildProactiveGoal(signals: ProactiveSignal[], now: Date = new D
     "[系统观察] 用户尚未开口。后台巡检发现以下情况：",
     ...lines,
     `现在时间：${now.toISOString()}。`,
-    "请你主动开场：先调用工具核实相关任务或资料的真实状态，然后用一段简洁自然的中文向用户汇报最重要的一两件事，并给出今天可以执行的建议。不要调用任何写入工具，不要修改数据。",
+    "请你主动开场：先调用工具核实相关任务或资料的真实状态，然后用一段简洁自然的中文向用户汇报最重要的一两件事，并给出今天可以执行的建议。如果有逾期的复习任务，主动询问完成情况并提议顺延（等用户同意后再操作）。不要调用任何写入工具，不要修改数据。",
   ].join("\n");
 }
 
@@ -74,3 +74,4 @@ export function buildProactiveFallback(signals: ProactiveSignal[]): string {
     .join("；");
   return `我巡检了你的学习空间，需要关注：${headline}。当前模型未配置，接入 GLM 后我可以给出更具体的安排建议。`;
 }
+

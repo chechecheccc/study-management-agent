@@ -24,7 +24,7 @@ export type AgentStepResponse =
 export type AgentRequestContext = {
   currentDate: string;
   timezone: string;
-  profile: { name: string; studyTime: string; goal: string };
+  profile: { name: string; studyTime: string; goal: string; notes: string[] };
 };
 
 export const MAX_HISTORY_MESSAGES = 30;
@@ -77,6 +77,9 @@ export function sanitizeAgentContext(value: unknown): AgentRequestContext {
       name: typeof profile.name === "string" ? profile.name.slice(0, 40) : "",
       studyTime: typeof profile.studyTime === "string" ? profile.studyTime.slice(0, 120) : "",
       goal: typeof profile.goal === "string" ? profile.goal.slice(0, 200) : "",
+      notes: Array.isArray(profile.notes)
+        ? profile.notes.filter((item): item is string => typeof item === "string").map((item) => item.slice(0, 140)).slice(0, 20)
+        : [],
     },
   };
 }
@@ -102,3 +105,4 @@ function cleanContent(value: unknown, max: number) {
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+

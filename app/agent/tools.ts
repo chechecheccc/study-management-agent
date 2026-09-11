@@ -44,7 +44,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
     name: "search_resources",
     label: "搜索资料",
     description:
-      "在本地资料库中按关键词、课程、类型、状态检索资料。返回标题、课程、类型、标签、状态和文件名。",
+      "在本地资料库中按关键词、课程、类型、状态检索资料，关键词同时匹配资料正文。返回标题、课程、类型、标签、状态、是否含正文及正文摘要。",
     parameters: {
       type: "object",
       properties: {
@@ -122,6 +122,55 @@ export const AGENT_TOOLS: ToolSpec[] = [
     requiresConfirmation: true,
   },
   {
+    name: "read_resource",
+    label: "阅读资料",
+    description:
+      "阅读某份资料的正文内容（入库时从 PDF / Word / PPT 提取的文本）。按标题模糊匹配。回答资料内容相关问题（概念解释、老师怎么讲的）前必须先调用，禁止编造内容。",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "资料标题，模糊匹配" },
+      },
+      required: ["title"],
+      additionalProperties: false,
+    },
+    requiresConfirmation: false,
+  },
+  {
+    name: "remember_fact",
+    label: "记住这件事",
+    description:
+      "把值得长期记住的学习情况写入长期记忆，例如：薄弱章节、重要考试日期、学习习惯、老师强调的考点。上限 20 条，只记有长期价值的事实，不要记闲聊。",
+    parameters: {
+      type: "object",
+      properties: {
+        fact: { type: "string", description: "一句简洁的事实，例如「数据库第三章事务部分是薄弱环节」" },
+      },
+      required: ["fact"],
+      additionalProperties: false,
+    },
+    requiresConfirmation: false,
+  },
+  {
+    name: "update_task",
+    label: "修改任务",
+    description:
+      "修改已有任务的标题、截止时间、优先级或类型，例如把没完成的复习安排顺延。先调用 list_tasks 找到准确标题。调用后系统会向用户弹出确认卡片，确认后才写入。",
+    parameters: {
+      type: "object",
+      properties: {
+        taskTitle: { type: "string", description: "要修改的任务标题，模糊匹配" },
+        title: { type: "string", description: "新标题，可选" },
+        dueAt: { type: "string", description: "新的截止时间，ISO 8601，可选" },
+        priority: { type: "string", enum: ["高", "中", "低"], description: "可选" },
+        type: { type: "string", enum: ["DDL", "考试", "复习"], description: "可选" },
+      },
+      required: ["taskTitle"],
+      additionalProperties: false,
+    },
+    requiresConfirmation: true,
+  },
+  {
     name: "update_profile",
     label: "更新我的画像",
     description:
@@ -169,3 +218,4 @@ export function toolSchemasForModel() {
     },
   }));
 }
+

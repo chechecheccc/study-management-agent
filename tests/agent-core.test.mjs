@@ -207,3 +207,79 @@ test("记忆与提示词：画像注入系统提示词", () => {
   assert.match(prompt, /不可信数据/);
   assert.match(formatProfileForPrompt({ name: "", studyTime: "", goal: "" }), /尚未填写/);
 });
+
+// ---------- Sprint 4：完整能力测试 ----------
+
+import { parseReminderOffsets, computeDueReminders, formatMinutesLeft } from "../app/agent/reminders.ts";
+import { buildICalendar } from "../app/lib/ical.ts";
+import { addProfileNote } from "../app/agent/memory.ts";
+
+test("Sprint 4 工具注册表：内容阅读、记忆笔记、任务修改", () => {
+  assert.ok(getToolSpec("read_resource"));
+  assert.ok(getToolSpec("remember_fact"));
+  assert.ok(getToolSpec("update_task"));
+  assert.equal(getToolSpec("update_task").requiresConfirmation, true);
+  assert.equal(getToolSpec("read_resource").requiresConfirmation, false);
+  assert.equal(getToolSpec("remember_fact").requiresConfirmation, false);
+  assert.match(getToolSpec("search_resources").description, /正文/);
+});
+
+test("提醒规则解析：提前3天、1天、2小时", () => {
+  assert.deepEqual(parseReminderOffsets("提前3天、1天、2小时"), [4320, 1440, 120]);
+  assert.deepEqual(parseReminderOffsets("提前2小时"), [120]);
+  assert.deepEqual(parseReminderOffsets("提前30分钟"), [30]);
+  assert.deepEqual(parseReminderOffsets(""), []);
+});
+
+test("提醒计算：到档触发、不重复、已完成不提醒、截止当天提醒一次", () => {
+  const now = new Date("2026-09-11T12:00:00+08:00");
+  const tasks = [
+    { id: "t1", title: "实验报告", courseId: "c1", type: "DDL", dueAt: "2026-09-11T13:30:00+08:00", status: "未开始", priority: "高", reminder: "提前3天、1天、2小时" },
+    { id: "t2", title: "已完成任务", courseId: "c1", type: "DDL", dueAt: "2026-09-11T13:30:00+08:00", status: "已完成", priority: "高", reminder: "提前2小时" },
+    { id: "t3", title: "刚过截止", courseId: "c1", type: "考试", dueAt: "2026-09-11T11:00:00+08:00", status: "进行中", priority: "高", reminder: "提前2小时" },
+  ];
+  const due = computeDueReminders(tasks, now, new Set());
+  assert.equal(due.length, 2);
+  const byTask = new Map(due.map((reminder) => [reminder.taskId, reminder]));
+  assert.equal(byTask.get("t1").key, "t1@120");
+  assert.equal(byTask.get("t1").offsetLabel, "提前 2 小时");
+  assert.equal(byTask.get("t3").key, "t3@overdue");
+  // 已触发过的不再提醒
+  const again = computeDueReminders(tasks, now, new Set(due.map((r) => r.key)));
+  assert.equal(again.length, 0);
+  assert.equal(formatMinutesLeft(45), "45 分钟");
+  assert.equal(formatMinutesLeft(130), "2 小时");
+  assert.equal(formatMinutesLeft(3000), "2 天");
+});
+
+test("iCal 导出：生成合法 VEVENT 并转义特殊字符", () => {
+  const ics = buildICalendar({
+    courses: [{ id: "c1", name: "数据库系统", semester: "2026 秋季", color: "coral" }],
+    resources: [],
+    tasks: [
+      { id: "t1", title: "实验报告, 第2部分", courseId: "c1", type: "DDL", dueAt: "2026-09-12T20:00:00+08:00", status: "未开始", priority: "高", reminder: "提前1天" },
+      { id: "t2", title: "非法日期", courseId: "c1", type: "DDL", dueAt: "不是日期", status: "未开始", priority: "中", reminder: "" },
+    ],
+  }, new Date("2026-09-11T12:00:00+08:00"));
+  assert.match(ics, /BEGIN:VCALENDAR/);
+  assert.match(ics, /END:VCALENDAR/);
+  assert.equal((ics.match(/BEGIN:VEVENT/g) ?? []).length, 1);
+  assert.match(ics, /SUMMARY:\[DDL\] 实验报告\\, 第2部分/);
+  assert.match(ics, /DTSTART:20260912T120000Z/);
+  assert.match(ics, /数据库系统/);
+});
+
+test("记忆笔记：去重、置顶最新、上限 20 条", () => {
+  let profile = { name: "", studyTime: "", goal: "", notes: [] };
+  profile = addProfileNote(profile, "数据库第三章薄弱");
+  profile = addProfileNote(profile, "高数错题集中在导数");
+  profile = addProfileNote(profile, "数据库第三章薄弱");
+  assert.equal(profile.notes.length, 2);
+  assert.equal(profile.notes[0], "数据库第三章薄弱");
+  for (let i = 0; i < 30; i += 1) profile = addProfileNote(profile, `笔记${i}`);
+  assert.equal(profile.notes.length, 20);
+  const prompt = buildAgentSystemPrompt({ currentDate: "2026-09-11T12:00:00+08:00", timezone: "Asia/Shanghai", profile });
+  assert.match(prompt, /记忆笔记/);
+  assert.match(prompt, /read_resource/);
+});
+

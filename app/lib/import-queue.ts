@@ -39,6 +39,8 @@ export type ImportQueueItem = {
   taskMeta?: PendingMeta;
   includeTask: boolean;
   summary?: string;
+  /** 入库时提取的正文文本，确认后写入 resource.contentText */
+  contentText?: string;
   error?: string;
   failureKind?: "validation" | "processing" | "storage";
 };
@@ -165,3 +167,4 @@ function guessCourseId(fileName: string, courses: Course[]) {
   const normalized = fileName.replace(/\s+/g, "").toLowerCase();
   return courses.find((course) => normalized.includes(course.name.replace(/\s+/g, "").toLowerCase()))?.id ?? "";
 }
+
