@@ -123,6 +123,11 @@ export default function Home() {
   const [search, setSearch] = useState("");
   const [modelConfigured, setModelConfigured] = useState<boolean | null>(null);
   const [agentRunning, setAgentRunning] = useState(false);
+  // 主动巡检等后台任务运行时不锁定输入框
+  const [agentBackground, setAgentBackground] = useState(false);
+  // 用户消息排队：Agent 忙时先记下，空闲后自动发出
+  const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
+  const queuedMessageRef = useRef<string | null>(null);
   const [extractError, setExtractError] = useState("");
   const [importQueue, setImportQueue] = useState<ImportQueueItem[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
@@ -144,7 +149,7 @@ export default function Home() {
   const batchRunningRef = useRef(false);
   const agentRunningRef = useRef(false);
   const agentHistoryRef = useRef<HistoryMessage[]>(loadAgentHistory());
-  const confirmResolverRef = useRef<((decision: ConfirmationDecision) => void) | null>(null);
+  const confirmResolverRef = useRef<{ settle: (decision: ConfirmationDecision) => void; timerId: number } | null>(null);
   const cancelledImportIdsRef = useRef(new Set<string>());
   const importAbortControllersRef = useRef(new Map<string, AbortController>());
   const savingImportIdsRef = useRef(new Set<string>());
@@ -526,10 +531,35 @@ export default function Home() {
     }
   };
 
+  const finishConfirmation = () => {
+    const pending = confirmResolverRef.current;
+    if (pending) window.clearTimeout(pending.timerId);
+    confirmResolverRef.current = null;
+    setPendingTaskConfirm(null);
+    setTaskConfirmDraft(null);
+    setPendingPlanConfirm(null);
+    setConfirmError("");
+  };
+
+  // 打开一个确认卡片并返回 settle：卡片显示期间最多等待 3 分钟，超时自动取消，
+  // 保证 Agent 循环不会因为用户切走页面 / 忘记确认而永久挂起。
+  const openConfirmation = (resolve: (decision: ConfirmationDecision) => void) => {
+    const settle = (decision: ConfirmationDecision) => {
+      window.clearTimeout(timerId);
+      resolve(decision);
+    };
+    const timerId = window.setTimeout(() => {
+      if (confirmResolverRef.current?.settle !== settle) return;
+      finishConfirmation();
+      addAssistantMessage("这次确认等待太久了，我先取消了这个操作。需要的话再说一次就行。");
+      resolve({ approved: false });
+    }, 180_000);
+    confirmResolverRef.current = { settle, timerId };
+  };
+
   const requestToolConfirmation = (call: AgentToolCall) =>
     new Promise<ConfirmationDecision>((resolve) => {
       if (call.name === "create_task") {
-        confirmResolverRef.current = resolve;
         const type = asString(call.arguments.type);
         const priority = asString(call.arguments.priority);
         setTaskConfirmDraft({
@@ -542,6 +572,7 @@ export default function Home() {
         });
         setConfirmError("");
         setPendingTaskConfirm(call);
+        openConfirmation(resolve);
         return;
       }
       if (call.name === "update_task") {
@@ -555,7 +586,6 @@ export default function Home() {
           resolve({ approved: true });
           return;
         }
-        confirmResolverRef.current = resolve;
         const priority = asString(call.arguments.priority);
         const type = asString(call.arguments.type);
         const proposedDue = asString(call.arguments.dueAt).trim();
@@ -569,29 +599,26 @@ export default function Home() {
         });
         setConfirmError("");
         setPendingTaskConfirm(call);
+        openConfirmation(resolve);
         return;
       }
       if (call.name === "save_review_plan") {
-        confirmResolverRef.current = resolve;
         setPendingPlanConfirm({
           courseName: asString(call.arguments.courseName),
           sessions: sanitizePlanSessions(call.arguments.sessions),
         });
         setConfirmError("");
+        openConfirmation(resolve);
         return;
       }
       resolve({ approved: false });
     });
 
   const settleConfirmation = (decision: ConfirmationDecision) => {
-    confirmResolverRef.current?.(decision);
-    confirmResolverRef.current = null;
-    setPendingTaskConfirm(null);
-    setTaskConfirmDraft(null);
-    setPendingPlanConfirm(null);
-    setConfirmError("");
+    const pending = confirmResolverRef.current;
+    finishConfirmation();
+    pending?.settle(decision);
   };
-
   const approveTaskConfirm = () => {
     if (!taskConfirmDraft) return;
     if (!taskConfirmDraft.title.trim() || !taskConfirmDraft.courseId || !taskConfirmDraft.dueAt) {
@@ -645,10 +672,12 @@ export default function Home() {
     );
   };
 
-  const runAgent = async (goal: string) => {
+  const runAgent = async (goal: string, options?: { background?: boolean }) => {
     if (agentRunningRef.current) return;
     agentRunningRef.current = true;
     setAgentRunning(true);
+    // background = 主动性巡检：不阻塞用户输入，用户随时可以打断并开始自己的对话
+    if (options?.background) setAgentBackground(true);
     const assistantId = makeId("message");
     setMessages((current) => [...current, { id: assistantId, role: "assistant", text: "", steps: [] }]);
     let finalText = "";
@@ -701,12 +730,29 @@ export default function Home() {
       saveAgentHistory(agentHistoryRef.current);
       agentRunningRef.current = false;
       setAgentRunning(false);
+      setAgentBackground(false);
+      // 上一轮结束后，自动发送排队中的用户消息（用户等待期间输入的内容不会被丢弃）
+      const pending = queuedMessageRef.current;
+      if (pending) {
+        queuedMessageRef.current = null;
+        setQueuedMessage(null);
+        window.setTimeout(() => { void runAgent(pending); }, 0);
+      }
     }
   };
 
+
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text || agentRunningRef.current || batchRunningRef.current) return;
+    if (!text || batchRunningRef.current) return;
+    if (agentRunningRef.current) {
+      // Agent 仍在处理上一条（例如后台巡检）：排队等它结束后自动发送，而不是丢消息
+      setInput("");
+      setMessages((current) => [...current, { id: makeId("message"), role: "user", text }]);
+      queuedMessageRef.current = text;
+      setQueuedMessage(text);
+      return;
+    }
     setMessages((current) => [...current, { id: makeId("message"), role: "user", text }]);
     setInput("");
     await runAgent(text);
@@ -744,7 +790,7 @@ export default function Home() {
       // 忽略存储失败，明天再提醒一次也无妨
     }
     if (modelConfigured) {
-      void runAgent(buildProactiveGoal(signals));
+      void runAgent(buildProactiveGoal(signals), { background: true });
     } else {
       addAssistantMessage(buildProactiveFallback(signals));
     }
@@ -1258,6 +1304,8 @@ export default function Home() {
               setInput={setInput}
               onSend={sendMessage}
               agentRunning={agentRunning}
+              agentBackground={agentBackground}
+              queuedMessage={queuedMessage}
               pendingTaskConfirm={pendingTaskConfirm}
               taskConfirmDraft={taskConfirmDraft}
               setTaskConfirmDraft={setTaskConfirmDraft}
@@ -1356,6 +1404,36 @@ export default function Home() {
         </div>
       </section>
     </main>
+    {view !== "assistant" && pendingTaskConfirm && taskConfirmDraft ? (
+      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="智能体请求写入任务">
+        <div className="action-card confirm-sheet">
+          <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "智能体请求写入 · 修改任务" : "智能体请求写入 · 新任务"}</div>
+          <input
+            className="action-title-input"
+            value={taskConfirmDraft.title}
+            onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, title: event.target.value } : current)}
+            aria-label="任务名称"
+          />
+          <div className="action-edit-grid">
+            <label><span>课程</span><select value={taskConfirmDraft.courseId} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, courseId: event.target.value } : current)}><option value="">请选择课程</option>{snapshot.courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
+            <label><span>截止</span><input type="datetime-local" value={taskConfirmDraft.dueAt} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, dueAt: event.target.value } : current)} /></label>
+            <label><span>类型</span><select value={taskConfirmDraft.type} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, type: event.target.value as Task["type"] } : current)}><option>DDL</option><option>考试</option><option>复习</option></select></label>
+            <label><span>提醒</span><input value={taskConfirmDraft.reminder} onChange={(event) => setTaskConfirmDraft((current) => current ? { ...current, reminder: event.target.value } : current)} /></label>
+          </div>
+          {confirmError ? <div className="queue-error">{confirmError}</div> : null}
+          <div className="action-buttons"><button className="primary-button" onClick={approveTaskConfirm}>确认并保存</button><button className="quiet-button" onClick={rejectConfirm}>取消</button></div>
+          <small className="confirm-hint">智能体正在等你确认，确认前不会写入任何数据。</small>
+        </div>
+      </div>
+    ) : null}
+    {view !== "review" && pendingPlanConfirm ? (
+      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="智能体请求保存复习计划">
+        <div className="action-card confirm-sheet">
+          <PlanConfirmCard plan={pendingPlanConfirm} error={confirmError} onApprove={approvePlanConfirm} onReject={rejectConfirm} />
+          <small className="confirm-hint">智能体正在等你确认，确认前不会写入任何数据。</small>
+        </div>
+      </div>
+    ) : null}
     {showIntro ? <StudyIntro onComplete={() => setShowIntro(false)} /> : null}
     </>
   );
@@ -1367,6 +1445,8 @@ function AssistantView({
   setInput,
   onSend,
   agentRunning,
+  agentBackground,
+  queuedMessage,
   pendingTaskConfirm,
   taskConfirmDraft,
   setTaskConfirmDraft,
@@ -1402,6 +1482,8 @@ function AssistantView({
   setInput: (value: string) => void;
   onSend: () => void | Promise<void>;
   agentRunning: boolean;
+  agentBackground: boolean;
+  queuedMessage: string | null;
   pendingTaskConfirm: AgentToolCall | null;
   taskConfirmDraft: TaskConfirmDraft | null;
   setTaskConfirmDraft: React.Dispatch<React.SetStateAction<TaskConfirmDraft | null>>;
@@ -1433,7 +1515,8 @@ function AssistantView({
   onNavigate: (view: View) => void;
 }) {
   const today = new Date();
-  const busy = agentRunning || batchRunning;
+  // 等待用户确认时不锁定输入：用户仍可浏览、打字，确认卡片在智能体页或兜底浮层里可见
+  const busy = (agentRunning && !agentBackground && !pendingTaskConfirm && !pendingPlanConfirm) || batchRunning;
   return (
     <div className="assistant-layout">
       <div className="assistant-column">
@@ -1472,8 +1555,9 @@ function AssistantView({
                 </div>
               </div>
             ))}
+
             {pendingTaskConfirm && taskConfirmDraft ? (
-              <div className="action-card gsap-action-card">
+              <div className="action-card gsap-action-card inline-confirm">
                 <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "智能体请求写入 · 修改任务" : "智能体请求写入 · 新任务"}</div>
                 <input
                   className="action-title-input"
@@ -1512,6 +1596,7 @@ function AssistantView({
             </div>
             {extractError ? <div className="extract-error">{extractError}</div> : null}
           </div>
+          {queuedMessage ? <div className="queued-note"><span className="progress-spinner" />已排队，等智能体完成当前任务后会自动发送</div> : null}
           <div className="composer">
             <input
               value={input}
@@ -1675,7 +1760,7 @@ function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprov
   const course = courses.find((item) => item.id === courseId);
 
   return <div className="page-view"><PageHeader eyebrow="REVIEW STUDIO" title="复习计划" description="智能体先查询你的真实任务和资料，再把计划排成可以完成的节奏。" action={<span className="soft-badge">Agent 生成 · 需确认</span>} />
-    <div className="review-layout"><div className="review-form-card"><div className="card-kicker">STEP 01 · 先说你的时间</div><h2>为哪门课准备？</h2><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label>考试或复习截止时间<input type="datetime-local" value={examAt} onChange={(event) => setExamAt(event.target.value)} /></label><label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label><div className="availability-chips"><button onClick={() => setAvailability("工作日晚上 19:00–21:00")}>工作日晚上</button><button onClick={() => setAvailability("周末上午 09:00–12:00")}>周末上午</button><button onClick={() => setAvailability("每天 60 分钟")}>每天1小时</button></div><button className="primary-button wide" disabled={running || !courseId} onClick={() => { setJustSaved(false); onGenerate(courseId, examAt, availability); }}>{running ? "智能体规划中…" : "生成计划草案"}</button><small className="form-help">智能体会先查询「{course?.name ?? "课程"}」的未完成任务和已有资料，再制定计划。</small></div><div className="plan-preview-card">{running ? <div className="empty-plan"><span className="progress-spinner" /><h2>智能体正在规划</h2><p>正在查询任务与资料，并把复习安排拆到具体日期。</p></div> : plan ? <><div className="plan-head"><div><div className="card-kicker">STEP 02 · 草案待确认</div><h2>{plan.courseName || course?.name || "课程"} · 复习节奏</h2></div><span className="soft-badge">{availability}</span></div>{plan.sessions.map((session) => <PlanItem key={`${session.date}-${session.title}`} date={formatShortDate(session.date)} title={session.title} duration={`${session.durationMinutes}分钟`} />)}{confirmError ? <div className="queue-error">{confirmError}</div> : null}<div className="plan-actions"><button className="primary-button" onClick={() => { onApprovePlan(); setJustSaved(true); }}>确认保存</button><button className="quiet-button" onClick={onRejectPlan}>放弃草案</button></div></> : justSaved ? <div className="empty-plan"><div className="plan-orbit">✓</div><h2>计划已保存</h2><p>复习安排已写入任务中心，到点会在任务列表中出现。</p></div> : <div className="empty-plan"><div className="plan-orbit">✦</div><h2>计划会出现在这里</h2><p>选择课程并告诉我你有空的时间，智能体会基于真实数据生成一份可确认的草案。</p></div>}</div></div>
+    <div className="review-layout"><div className="review-form-card"><div className="card-kicker">STEP 01 · 先说你的时间</div><h2>为哪门课准备？</h2><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label>考试或复习截止时间<input type="datetime-local" value={examAt} onChange={(event) => setExamAt(event.target.value)} /></label><label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label><div className="availability-chips"><button onClick={() => setAvailability("工作日晚上 19:00–21:00")}>工作日晚上</button><button onClick={() => setAvailability("周末上午 09:00–12:00")}>周末上午</button><button onClick={() => setAvailability("每天 60 分钟")}>每天1小时</button></div><button className="primary-button wide" disabled={running || !courseId} onClick={() => { setJustSaved(false); onGenerate(courseId, examAt, availability); }}>{running ? "智能体规划中…" : "生成计划草案"}</button><small className="form-help">智能体会先查询「{course?.name ?? "课程"}」的未完成任务和已有资料，再制定计划。</small></div><div className="plan-preview-card">{plan ? <><div className="plan-head"><div><div className="card-kicker">STEP 02 · 草案待确认</div><h2>{plan.courseName || course?.name || "课程"} · 复习节奏</h2></div><span className="soft-badge">{availability}</span></div>{plan.sessions.map((session) => <PlanItem key={`${session.date}-${session.title}`} date={formatShortDate(session.date)} title={session.title} duration={`${session.durationMinutes}分钟`} />)}{confirmError ? <div className="queue-error">{confirmError}</div> : null}<div className="plan-actions"><button className="primary-button" onClick={() => { onApprovePlan(); setJustSaved(true); }}>确认保存</button><button className="quiet-button" onClick={onRejectPlan}>放弃草案</button></div></> : justSaved ? <div className="empty-plan"><div className="plan-orbit">✓</div><h2>计划已保存</h2><p>复习安排已写入任务中心，到点会在任务列表中出现。</p></div> : running ? <div className="empty-plan"><span className="progress-spinner" /><h2>智能体正在规划</h2><p>正在查询任务与资料，并把复习安排拆到具体日期。</p></div> : <div className="empty-plan"><div className="plan-orbit">✦</div><h2>计划会出现在这里</h2><p>选择课程并告诉我你有空的时间，智能体会基于真实数据生成一份可确认的草案。</p></div>}</div></div>
   </div>;
 }
 
@@ -1817,6 +1902,19 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
