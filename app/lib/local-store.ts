@@ -49,19 +49,40 @@ export type AppSnapshot = {
   tasks: Task[];
 };
 
-const DB_NAME = "study-agent-local";
 const DB_VERSION = 2;
 const DATA_STORES = ["courses", "resources", "tasks"] as const;
 const FILE_STORE = "files";
 const ALL_STORES = [...DATA_STORES, FILE_STORE] as const;
+const CHAT_STORE = "chat";
+const ALL_STORES_WITH_CHAT = [...ALL_STORES, CHAT_STORE] as const;
+
+// 账号隔离：每个账号使用独立的 IndexedDB 与 localStorage 命名空间。
+// 未登录（scope 为空）时回落到默认命名空间，保证旧数据仍可访问。
 const FALLBACK_KEY = "study-agent-snapshot";
+let dataScope = "";
+
+export function setDataScope(userId: string) {
+  dataScope = userId ? userId.replace(/[^a-zA-Z0-9._-]/g, "") : "";
+}
+
+export function getDataScope() {
+  return dataScope;
+}
+
+function scopedDbName() {
+  return dataScope ? `study-agent-local__${dataScope}` : "study-agent-local";
+}
+
+function scopedKey(base: string) {
+  return dataScope ? `${base}::${dataScope}` : base;
+}
 
 function openDb(): Promise<IDBDatabase> {
   return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
+    const request = indexedDB.open(scopedDbName(), DB_VERSION);
     request.onupgradeneeded = () => {
       const db = request.result;
-      ALL_STORES.forEach((store) => {
+      ALL_STORES_WITH_CHAT.forEach((store) => {
         if (!db.objectStoreNames.contains(store)) {
           db.createObjectStore(store, { keyPath: "id" });
         }
@@ -106,7 +127,7 @@ export async function loadSnapshot(): Promise<AppSnapshot> {
     db.close();
     return { courses, resources, tasks };
   } catch {
-    const fallback = window.localStorage.getItem(FALLBACK_KEY);
+    const fallback = window.localStorage.getItem(scopedKey(FALLBACK_KEY));
     return fallback ? (JSON.parse(fallback) as AppSnapshot) : emptySnapshot();
   }
 }
@@ -127,7 +148,7 @@ export async function saveSnapshot(snapshot: AppSnapshot) {
     });
     db.close();
   } catch {
-    window.localStorage.setItem(FALLBACK_KEY, JSON.stringify(snapshot));
+    window.localStorage.setItem(scopedKey(FALLBACK_KEY), JSON.stringify(snapshot));
   }
 }
 
@@ -180,6 +201,50 @@ export async function deleteLocalFile(fileId: string) {
     transaction.onerror = () => reject(transaction.error);
   });
   db.close();
+}
+
+export type ChatLogRecord = {
+  id: string;
+  role: "user" | "assistant";
+  text: string;
+  steps?: Array<{ id: string; label: string; status: "running" | "done" | "failed"; detail?: string }>;
+  createdAt: string;
+};
+
+export async function loadChatLog(): Promise<ChatLogRecord[]> {
+  if (typeof window === "undefined" || typeof indexedDB === "undefined") return [];
+  try {
+    const db = await openDb();
+    const records = await new Promise<ChatLogRecord[]>((resolve, reject) => {
+      const transaction = db.transaction(CHAT_STORE, "readonly");
+      const request = transaction.objectStore(CHAT_STORE).getAll();
+      request.onsuccess = () => resolve((request.result ?? []) as ChatLogRecord[]);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return records.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+  } catch {
+    return [];
+  }
+}
+
+export async function saveChatLog(records: ChatLogRecord[]) {
+  if (typeof window === "undefined" || typeof indexedDB === "undefined") return;
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(CHAT_STORE, "readwrite");
+      const store = transaction.objectStore(CHAT_STORE);
+      store.clear();
+      records.slice(-200).forEach((record) => store.put(record));
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    db.close();
+  } catch {
+    // 聊天记录写入失败不影响主流程
+  }
 }
 
 export function emptySnapshot(): AppSnapshot {
@@ -273,4 +338,6 @@ export function demoSnapshot(): AppSnapshot {
 export function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
+
 

@@ -10,6 +10,17 @@ export type UserProfile = {
 };
 
 export const PROFILE_STORAGE_KEY = "study-agent-profile";
+
+// 账号隔离：画像按账号键分开存储，避免多个用户互相看到对方的记忆
+let memoryScope = "";
+
+export function setMemoryScope(userId: string) {
+  memoryScope = userId ? userId.replace(/[^a-zA-Z0-9._-]/g, "") : "";
+}
+
+export function scopedMemoryKey(base: string) {
+  return memoryScope ? `${base}::${memoryScope}` : base;
+}
 export const MAX_NOTES = 20;
 export const MAX_NOTE_CHARS = 140;
 
@@ -20,7 +31,7 @@ export function emptyProfile(): UserProfile {
 export function loadProfile(): UserProfile {
   if (typeof window === "undefined") return emptyProfile();
   try {
-    const raw = window.localStorage.getItem(PROFILE_STORAGE_KEY);
+    const raw = window.localStorage.getItem(scopedMemoryKey(PROFILE_STORAGE_KEY));
     if (!raw) return emptyProfile();
     const parsed = JSON.parse(raw) as Partial<UserProfile>;
     return sanitizeProfile(parsed);
@@ -32,7 +43,7 @@ export function loadProfile(): UserProfile {
 export function saveProfile(profile: UserProfile) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(PROFILE_STORAGE_KEY, JSON.stringify(sanitizeProfile(profile)));
+    window.localStorage.setItem(scopedMemoryKey(PROFILE_STORAGE_KEY), JSON.stringify(sanitizeProfile(profile)));
   } catch {
     // localStorage 不可用时静默降级：记忆仅保留在当前会话状态中。
   }
@@ -82,4 +93,5 @@ export function formatProfileForPrompt(profile: UserProfile): string {
   }
   return lines.join("\n");
 }
+
 

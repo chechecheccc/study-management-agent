@@ -12,11 +12,15 @@ import {
   demoSnapshot,
   emptySnapshot,
   getLocalFile,
+  loadChatLog,
   loadSnapshot,
   makeId,
+  saveChatLog,
   saveLocalFile,
   saveSnapshot,
+  setDataScope,
 } from "./lib/local-store";
+import type { ChatLogRecord } from "./lib/local-store";
 import type { ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
@@ -30,20 +34,34 @@ import {
 import type { ImportQueueItem, PendingResourceDraft } from "./lib/import-queue";
 import { BatchImportQueue } from "./components/import-queue";
 import { StudyIntro } from "./components/study-intro";
+import { LoginScreen } from "./components/login-screen";
+import { AccountPanel } from "./components/account-panel";
+import {
+  SEED_ACCOUNTS,
+  authenticate,
+  buildAccount,
+  findAccountById,
+  loadAccounts,
+  saveAccounts,
+  toPublicAccount,
+  validateNewAccount,
+} from "./lib/accounts";
+import type { UserAccount } from "./lib/accounts";
 import { runAgentLoop } from "./agent/loop";
 import type { ConfirmationDecision, HistoryMessage, ToolExecutionResult } from "./agent/loop";
 import type { AgentStepResponse, AgentToolCall, AgentWireMessage } from "./agent/protocol";
 import { getToolSpec } from "./agent/tools";
 import { extractSearchableText } from "./lib/content-extract";
 import { buildICalendar } from "./lib/ical";
-import { addProfileNote, loadProfile, saveProfile, sanitizeProfile } from "./agent/memory";
+import { addProfileNote, loadProfile, saveProfile, sanitizeProfile, setMemoryScope } from "./agent/memory";
+import { setReminderScope } from "./agent/reminders";
 import { computeDueReminders, formatMinutesLeft, loadFiredReminders, saveFiredReminders } from "./agent/reminders";
 import type { UserProfile } from "./agent/memory";
 import { buildProactiveFallback, buildProactiveGoal, computeProactiveSignals } from "./agent/triggers";
 
 gsap.registerPlugin(useGSAP);
 
-type View = "assistant" | "resources" | "tasks" | "review" | "data";
+type View = "assistant" | "resources" | "tasks" | "review" | "data" | "accounts";
 
 type ToolStep = {
   id: string;
@@ -93,6 +111,7 @@ const viewLabels: Record<View, string> = {
   tasks: "任务中心",
   review: "复习计划",
   data: "数据管理",
+  accounts: "账号管理",
 };
 
 const formatDate = (value: string) => {
@@ -128,6 +147,8 @@ export default function Home() {
   // 用户消息排队：Agent 忙时先记下，空闲后自动发出
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const queuedMessageRef = useRef<string | null>(null);
+  // 聊天消息首次出现的时间（保证刷新后顺序稳定）
+  const chatTimestampsRef = useRef(new Map<string, string>());
   const [extractError, setExtractError] = useState("");
   const [importQueue, setImportQueue] = useState<ImportQueueItem[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
@@ -139,7 +160,10 @@ export default function Home() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskCourse, setTaskCourse] = useState("");
   const [taskDueAt, setTaskDueAt] = useState("2026-08-12T23:59");
-  const [profile, setProfile] = useState<UserProfile>(() => (typeof window === "undefined" ? { name: "", studyTime: "", goal: "", notes: [] } : loadProfile()));
+  const [accounts, setAccounts] = useState<UserAccount[]>([]);
+  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [authReady, setAuthReady] = useState(false);
+  const [profile, setProfile] = useState<UserProfile>({ name: "", studyTime: "", goal: "", notes: [] });
   const [pendingTaskConfirm, setPendingTaskConfirm] = useState<AgentToolCall | null>(null);
   const [taskConfirmDraft, setTaskConfirmDraft] = useState<TaskConfirmDraft | null>(null);
   const [pendingPlanConfirm, setPendingPlanConfirm] = useState<PlanConfirmState | null>(null);
@@ -219,6 +243,79 @@ export default function Home() {
     gsap.to(".ambient-glow-two", { x: -18, y: 22, rotation: -10, repeat: -1, yoyo: true, duration: 9, ease: "sine.inOut" });
   }, { scope: appRef });
 
+  // 首次运行：植入 1 个管理员 + 2 个普通用户；已存在则保持原有账号
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const existing = loadAccounts();
+      if (existing.length) {
+        if (!cancelled) setAccounts(existing);
+        if (!cancelled) setAuthReady(true);
+        return;
+      }
+      const seeded: UserAccount[] = [];
+      for (const seed of SEED_ACCOUNTS) {
+        seeded.push(await buildAccount(seed));
+      }
+      if (cancelled) return;
+      saveAccounts(seeded);
+      setAccounts(seeded);
+      setAuthReady(true);
+    })();
+    return () => { cancelled = true; };
+  }, []);
+
+  // 登录：切换数据作用域后再加载该账号自己的数据
+  // 切换账号：先同步切换所有存储作用域，再加载该账号自己的数据
+  const openUserWorkspace = async (account: UserAccount) => {
+    setDataScope(account.id);
+    setMemoryScope(account.id);
+    setReminderScope(account.id);
+    setReady(false);
+    chatTimestampsRef.current = new Map();
+    setProfile(loadProfile());
+
+    const [stored, chat] = await Promise.all([loadSnapshot(), loadChatLog()]);
+    const next = stored.courses.length ? stored : demoSnapshot();
+    setSnapshot(next);
+    if (!stored.courses.length) void saveSnapshot(next);
+    setMessages(
+      chat.length
+        ? chat.map((record) => ({ id: record.id, role: record.role, text: record.text, steps: record.steps }))
+        : initialMessages,
+    );
+    setImportQueue([]);
+    setPendingTaskConfirm(null);
+    setTaskConfirmDraft(null);
+    setPendingPlanConfirm(null);
+    setResourceCourse(next.courses[0]?.id ?? "");
+    setTaskCourse(next.courses[0]?.id ?? "");
+    setView("assistant");
+    setReady(true);
+  };
+
+  const login = async (username: string, password: string): Promise<string | null> => {
+    const result = await authenticate(accounts, username, password);
+    if (!result.ok) return result.message;
+    const nextAccounts = accounts.map((account) =>
+      account.id === result.account.id ? { ...account, lastLoginAt: new Date().toISOString() } : account,
+    );
+    setAccounts(nextAccounts);
+    saveAccounts(nextAccounts);
+    await openUserWorkspace(result.account);
+    setCurrentUser(result.account);
+    return null;
+  };
+
+  const logout = () => {
+    // 先停用持久化（ready=false），再清空账号作用域，避免登出瞬间把数据写进默认命名空间
+    setReady(false);
+    setCurrentUser(null);
+    setDataScope("");
+    setMemoryScope("");
+    setReminderScope("");
+  };
+
   useEffect(() => {
     snapshotRef.current = snapshot;
   }, [snapshot]);
@@ -226,17 +323,6 @@ export default function Home() {
   useEffect(() => {
     profileRef.current = profile;
   }, [profile]);
-
-  useEffect(() => {
-    loadSnapshot().then((stored) => {
-      const next = stored.courses.length ? stored : demoSnapshot();
-      setSnapshot(next);
-      setReady(true);
-      setResourceCourse(next.courses[0]?.id ?? "");
-      setTaskCourse(next.courses[0]?.id ?? "");
-      if (!stored.courses.length) saveSnapshot(next);
-    });
-  }, []);
 
   useEffect(() => {
     fetch("/api/ai/health", { cache: "no-store" })
@@ -250,8 +336,27 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (ready) saveSnapshot(snapshot);
-  }, [ready, snapshot]);
+    if (ready && currentUser) saveSnapshot(snapshot);
+  }, [ready, snapshot, currentUser]);
+
+  // 聊天记录保存到当前账号（欢迎语不落库）。
+  // 时间戳只在首次写入时生成，之后沿用，避免每次保存重排消息顺序。
+  useEffect(() => {
+    if (!ready || !currentUser) return;
+    const records: ChatLogRecord[] = messages
+      .filter((message) => message.id !== "welcome" && message.text.trim())
+      .map((message, index) => ({
+        id: message.id,
+        role: message.role,
+        text: message.text,
+        steps: message.steps,
+        createdAt: chatTimestampsRef.current.get(message.id) ?? new Date(Date.now() + index).toISOString(),
+      }));
+    records.forEach((record) => {
+      if (!chatTimestampsRef.current.has(record.id)) chatTimestampsRef.current.set(record.id, record.createdAt);
+    });
+    void saveChatLog(records);
+  }, [messages, ready, currentUser]);
 
   const courseMap = useMemo(
     () => new Map(snapshot.courses.map((course) => [course.id, course])),
@@ -1210,6 +1315,56 @@ export default function Home() {
     addAssistantMessage("示例数据已恢复。你可以在此基础上继续添加自己的课程、资料和任务。");
   };
 
+  // ---------- 账号管理（仅管理员） ----------
+
+  const createAccount = async (input: { username: string; displayName: string; password: string; role: "admin" | "user" }): Promise<string | null> => {
+    const validated = validateNewAccount({ ...input, accounts });
+    if (!validated.ok) return validated.message;
+    const account = await buildAccount({ ...input, username: validated.username, displayName: validated.displayName });
+    const next = [...accounts, account];
+    setAccounts(next);
+    saveAccounts(next);
+    return null;
+  };
+
+  const toggleAccountDisabled = (userId: string) => {
+    if (userId === currentUser?.id) return;
+    const next = accounts.map((account) =>
+      account.id === userId ? { ...account, disabled: !account.disabled } : account,
+    );
+    setAccounts(next);
+    saveAccounts(next);
+  };
+
+  const resetAccountPassword = async (userId: string, password: string): Promise<string | null> => {
+    if (password.length < 6) return "密码至少 6 位。";
+    const target = findAccountById(accounts, userId);
+    if (!target) return "找不到该账号。";
+    const rebuilt = await buildAccount({ username: target.username, displayName: target.displayName, password, role: target.role });
+    const next = accounts.map((account) =>
+      account.id === userId ? { ...rebuilt, id: target.id, createdAt: target.createdAt } : account,
+    );
+    setAccounts(next);
+    saveAccounts(next);
+    return null;
+  };
+
+  const deleteAccount = async (userId: string) => {
+    if (userId === currentUser?.id) return;
+    const next = accounts.filter((account) => account.id !== userId);
+    setAccounts(next);
+    saveAccounts(next);
+    // 同时清除该账号在本机留下的数据（IndexedDB 命名空间 + 记忆键）
+    try {
+      indexedDB.deleteDatabase(`study-agent-local__${userId}`);
+      window.localStorage.removeItem(`study-agent-profile::${userId}`);
+      window.localStorage.removeItem(`study-agent-reminders-fired::${userId}`);
+      window.localStorage.removeItem(`study-agent-snapshot::${userId}`);
+    } catch {
+      // 清理失败不影响账号移除
+    }
+  };
+
   const exportICalendar = () => {
     const blob = new Blob([buildICalendar(snapshot)], { type: "text/calendar;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1234,6 +1389,14 @@ export default function Home() {
     );
   };
 
+  if (!authReady) {
+    return <main className="auth-shell"><div className="auth-card"><div className="auth-brand"><div className="brand-mark">学</div><div><div className="brand-name">学习管家</div><div className="brand-caption">personal study agent</div></div></div><p className="auth-copy">正在准备本地账号…</p></div></main>;
+  }
+
+  if (!currentUser) {
+    return <LoginScreen accounts={accounts.map(toPublicAccount)} onLogin={login} />;
+  }
+
   return (
     <>
     <main className="app-shell" ref={appRef}>
@@ -1247,13 +1410,13 @@ export default function Home() {
         </div>
 
         <nav className="main-nav" aria-label="主导航">
-          {(Object.keys(viewLabels) as View[]).map((item) => (
+          {(Object.keys(viewLabels) as View[]).filter((item) => item !== "accounts" || currentUser.role === "admin").map((item) => (
             <button
               className={`nav-item ${view === item ? "active" : ""}`}
               key={item}
               onClick={() => setView(item)}
             >
-              <span className="nav-dot">{item === "assistant" ? "✦" : item === "resources" ? "▣" : item === "tasks" ? "◷" : item === "review" ? "✓" : "⚙"}</span>
+              <span className="nav-dot">{item === "assistant" ? "✦" : item === "resources" ? "▣" : item === "tasks" ? "◷" : item === "review" ? "✓" : item === "accounts" ? "☰" : "⚙"}</span>
               <span>{viewLabels[item]}</span>
               {item === "tasks" && upcomingTasks.length > 0 ? <span className="nav-count">{upcomingTasks.length}</span> : null}
             </button>
@@ -1269,6 +1432,15 @@ export default function Home() {
               <span className="course-count">{snapshot.resources.filter((resource) => resource.courseId === course.id).length}</span>
             </button>
           ))}
+        </div>
+
+        <div className="sidebar-user">
+          <span className={`role-badge ${currentUser.role}`}>{currentUser.role === "admin" ? "管理员" : "学生"}</span>
+          <div className="sidebar-user-main">
+            <strong>{currentUser.displayName}</strong>
+            <small>@{currentUser.username}</small>
+          </div>
+          <button className="text-button" onClick={logout}>登出</button>
         </div>
 
         <div className="sidebar-footer">
@@ -1384,6 +1556,17 @@ export default function Home() {
               onGenerate={generateReviewPlan}
               onApprovePlan={approvePlanConfirm}
               onRejectPlan={rejectConfirm}
+            />
+          ) : null}
+
+          {view === "accounts" && currentUser.role === "admin" ? (
+            <AccountPanel
+              accounts={accounts.map(toPublicAccount)}
+              currentUserId={currentUser.id}
+              onCreate={createAccount}
+              onToggleDisabled={toggleAccountDisabled}
+              onResetPassword={resetAccountPassword}
+              onDelete={deleteAccount}
             />
           ) : null}
 
@@ -1902,6 +2085,15 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
+
+
+
+
 
 
 

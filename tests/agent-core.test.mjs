@@ -283,3 +283,69 @@ test("记忆笔记：去重、置顶最新、上限 20 条", () => {
   assert.match(prompt, /read_resource/);
 });
 
+
+// ---------- 账号系统测试 ----------
+
+import {
+  SEED_ACCOUNTS,
+  authenticate,
+  buildAccount,
+  hashPassword,
+  normalizeUsername,
+  toPublicAccount,
+  validateNewAccount,
+  verifyPassword,
+} from "../app/lib/accounts.ts";
+
+test("预置账号：1 个管理员 + 2 个普通用户", () => {
+  assert.equal(SEED_ACCOUNTS.length, 3);
+  assert.equal(SEED_ACCOUNTS.filter((a) => a.role === "admin").length, 1);
+  assert.equal(SEED_ACCOUNTS.filter((a) => a.role === "user").length, 2);
+  assert.ok(SEED_ACCOUNTS.every((a) => a.password.length >= 6));
+});
+
+test("密码哈希：同密码不同盐得到不同哈希，且可校验", async () => {
+  const account = await buildAccount({ username: "tester", password: "secret123", role: "user" });
+  assert.notEqual(account.hash, "secret123");
+  assert.ok(account.salt.length >= 16);
+  assert.equal(await verifyPassword("secret123", account), true);
+  assert.equal(await verifyPassword("wrong-pass", account), false);
+
+  const same = await buildAccount({ username: "tester2", password: "secret123", role: "user" });
+  assert.notEqual(same.hash, account.hash); // 盐不同 → 哈希不同
+  const again = await hashPassword("secret123", account.salt, account.iterations);
+  assert.equal(again, account.hash);
+});
+
+test("对外结构不泄露盐与哈希", async () => {
+  const account = await buildAccount({ username: "tester", password: "secret123", role: "admin" });
+  const publicView = toPublicAccount(account);
+  assert.equal("salt" in publicView, false);
+  assert.equal("hash" in publicView, false);
+  assert.equal(publicView.username, "tester");
+  assert.equal(publicView.role, "admin");
+});
+
+test("登录认证：正确密码通过、错误密码失败、停用账号拒绝", async () => {
+  const account = await buildAccount({ username: "student", password: "goodpass", role: "user" });
+  const ok = await authenticate([account], "student", "goodpass");
+  assert.equal(ok.ok, true);
+  const wrong = await authenticate([account], "student", "badpass");
+  assert.equal(wrong.ok, false);
+  const missing = await authenticate([account], "nobody", "goodpass");
+  assert.equal(missing.ok, false);
+  const disabled = await authenticate([{ ...account, disabled: true }], "student", "goodpass");
+  assert.equal(disabled.ok, false);
+  assert.match(disabled.message, /停用/);
+});
+
+test("用户名规范化与唯一性校验", async () => {
+  assert.equal(normalizeUsername("  Student1  "), "student1");
+  const existing = [await buildAccount({ username: "student1", password: "123456", role: "user" })];
+  assert.equal(validateNewAccount({ username: "ab", password: "123456", accounts: existing }).ok, false);
+  assert.equal(validateNewAccount({ username: "student1", password: "123456", accounts: existing }).ok, false);
+  assert.equal(validateNewAccount({ username: "student1", password: "123", accounts: existing }).ok, false);
+  const ok = validateNewAccount({ username: "Student2", password: "123456", accounts: existing });
+  assert.equal(ok.ok, true);
+  assert.equal(ok.ok && ok.username, "student2");
+});

@@ -15,6 +15,17 @@ export type DueReminder = {
 const DAY_MINUTES = 1440;
 const HOUR_MINUTES = 60;
 const FIRED_KEY = "study-agent-reminders-fired";
+
+// 账号隔离：提醒触发记录按账号分开，避免 A 用户触发过导致 B 用户收不到
+let reminderScope = "";
+
+export function setReminderScope(userId: string) {
+  reminderScope = userId ? userId.replace(/[^a-zA-Z0-9._-]/g, "") : "";
+}
+
+function scopedFiredKey() {
+  return reminderScope ? `${FIRED_KEY}::${reminderScope}` : FIRED_KEY;
+}
 const MAX_FIRED_KEYS = 500;
 
 // "提前3天、1天、2小时" → [4320, 1440, 120]（分钟，从大到小）
@@ -81,7 +92,7 @@ export function formatMinutesLeft(minutes: number): string {
 export function loadFiredReminders(): Set<string> {
   if (typeof window === "undefined") return new Set();
   try {
-    const raw = window.localStorage.getItem(FIRED_KEY);
+    const raw = window.localStorage.getItem(scopedFiredKey());
     const parsed = raw ? (JSON.parse(raw) as unknown) : [];
     return new Set(Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : []);
   } catch {
@@ -92,10 +103,11 @@ export function loadFiredReminders(): Set<string> {
 export function saveFiredReminders(keys: Set<string>) {
   if (typeof window === "undefined") return;
   try {
-    window.localStorage.setItem(FIRED_KEY, JSON.stringify([...keys].slice(-MAX_FIRED_KEYS)));
+    window.localStorage.setItem(scopedFiredKey(), JSON.stringify([...keys].slice(-MAX_FIRED_KEYS)));
   } catch {
     // 存储失败时提醒可能重复，可接受
   }
 }
+
 
 
