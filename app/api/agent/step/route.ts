@@ -6,8 +6,9 @@ import type { AgentToolCall } from "../../../agent/protocol";
 import { buildAgentSystemPrompt } from "../../../agent/prompts";
 import { toolSchemasForModel } from "../../../agent/tools";
 
-const DEFAULT_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-const DEFAULT_AGENT_MODEL = "glm-4.6";
+// Agent 循环使用 DeepSeek（OpenAI 兼容接口），与文件抽取用的 GLM 分开配置
+const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
+const DEFAULT_AGENT_MODEL = "deepseek-v4-flash";
 const MAX_REQUEST_BYTES = 1_000_000;
 const TIMEOUT_MS = 55_000;
 
@@ -55,7 +56,7 @@ export async function POST(request: Request) {
   }
   const context = sanitizeAgentContext(body.context);
 
-  const apiKey = process.env.GLM_API_KEY?.trim();
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) {
     return errorResponse(
       "MODEL_NOT_CONFIGURED",
@@ -65,12 +66,12 @@ export async function POST(request: Request) {
     );
   }
 
-  const model = process.env.GLM_AGENT_MODEL?.trim() || process.env.GLM_MODEL?.trim() || DEFAULT_AGENT_MODEL;
+  const model = process.env.DEEPSEEK_AGENT_MODEL?.trim() || DEFAULT_AGENT_MODEL;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const upstream = await fetch(process.env.GLM_API_URL?.trim() || DEFAULT_ENDPOINT, {
+    const upstream = await fetch(process.env.DEEPSEEK_API_URL?.trim() || DEFAULT_ENDPOINT, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -84,8 +85,6 @@ export async function POST(request: Request) {
         ],
         tools: toolSchemasForModel(),
         tool_choice: "auto",
-        // 工具调用循环追求响应速度，默认关闭深度思考；需要更强推理时设 GLM_AGENT_THINKING=enabled
-        thinking: { type: process.env.GLM_AGENT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" },
         temperature: 0.3,
         max_tokens: 2048,
         stream: false,
@@ -191,5 +190,6 @@ function jsonResponse(body: unknown, status = 200) {
 function errorResponse(code: string, message: string, status: number, fallback = false) {
   return jsonResponse({ ok: false, error: { code, message }, fallback }, status);
 }
+
 
 

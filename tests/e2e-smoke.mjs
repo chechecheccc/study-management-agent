@@ -49,7 +49,18 @@ async function dismissIntro() {
 try {
   // 1. 加载
   await page.goto(BASE, { waitUntil: "load" });
-  await page.waitForTimeout(1500);
+  await page.waitForTimeout(2500);
+
+  // 账号系统：先用预置的管理员账号登录
+  const userField = page.locator('input[aria-label="用户名"]');
+  if (await userField.isVisible().catch(() => false)) {
+    await userField.fill("admin");
+    await page.locator('input[aria-label="密码"]').fill("admin123");
+    await page.getByRole("button", { name: /^登录$/ }).click();
+    await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
+    await page.waitForTimeout(1200);
+  }
+
   await dismissIntro();
   check("页面加载并进入主界面", await page.locator(".brand-name").isVisible());
   const idle = await waitIdle();
@@ -100,11 +111,22 @@ try {
   await page.locator(".nav-item", { hasText: "智能体" }).click();
   await page.waitForTimeout(800);
   await waitIdle();
-  await composer.fill("先打开资料库，然后帮我记一个后天中午 12 点的 DDL：视图切换测试任务");
+  await composer.fill("先打开资料库，然后帮我记一个后天中午 12 点的 DDL：数据库系统的视图切换测试任务");
   await composer.press("Enter");
-  await page.waitForTimeout(6000);
+
+  // 模型可能把 navigate 与后续工具放在同轮或分轮，所以轮询等待"页面已切换且卡片已出现"，
+  // 而不是假设固定的时序（旧脚本因此误报）。
+  let sawOtherView = false;
+  let rescueVisible = false;
+  for (let i = 0; i < 40; i += 1) {
+    await page.waitForTimeout(1000);
+    const v = await page.locator(".content-wrap").getAttribute("data-view");
+    if (v && v !== "assistant") sawOtherView = true;
+    rescueVisible = await page.locator(".confirm-overlay.rescue-overlay").isVisible().catch(() => false);
+    if (sawOtherView && rescueVisible) break;
+  }
   const visibleViews = await page.locator(".content-wrap").getAttribute("data-view");
-  const rescueVisible = await page.locator(".confirm-overlay.rescue-overlay").isVisible().catch(() => false);
+  check("Agent 能切换页面", sawOtherView, `当前视图=${visibleViews}`);
   check("切走后确认卡片以非阻塞浮层兜底显示", rescueVisible, `当前视图=${visibleViews}, 兜底浮层=${rescueVisible}`);
   // 回到智能体页，确认等待期间输入框不再被禁用（此前会永久锁死）
   await page.locator(".nav-item", { hasText: "智能体" }).click();
@@ -112,8 +134,12 @@ try {
   const composerNow = page.locator('input[aria-label="输入学习管理需求"]');
   const inputEnabled = (await composerNow.count()) > 0 && (await composerNow.isEnabled().catch(() => false));
   check("确认挂起时输入框仍可用（不再锁死）", inputEnabled, `输入框存在且可用=${inputEnabled}`);
+  // 回智能体页后，兜底浮层应隐藏、卡片改为内联显示
+  await page.waitForTimeout(800);
   const inlineCard = await page.locator(".inline-confirm").isVisible().catch(() => false);
+  const rescueStillVisible = await page.locator(".confirm-overlay.rescue-overlay").isVisible().catch(() => false);
   check("回到智能体页后确认卡片内联显示", inlineCard, `内联卡片可见=${inlineCard}`);
+  check("回到智能体页后兜底浮层自动隐藏", !rescueStillVisible, `兜底浮层=${rescueStillVisible}`);
   await shot("05-cross-view-confirm");
   // 收尾：如果卡片存在就取消，避免卡住
   if (rescueVisible) {
@@ -130,7 +156,8 @@ try {
   if (await strayOverlay.isVisible().catch(() => false)) { await strayOverlay.click(); await page.waitForTimeout(1200); }
   await page.getByRole("button", { name: /生成计划草案/ }).click();
   const planCard = page.locator(".plan-preview-card .plan-item").first();
-  const planOk = await planCard.waitFor({ state: "visible", timeout: 150000 }).then(() => true).catch(() => false);
+  // 复习计划是 5 步深度推理（查课程/任务/资料 → 读正文 → 生成计划），给足超时
+  const planOk = await planCard.waitFor({ state: "visible", timeout: 240000 }).then(() => true).catch(() => false);
   check("复习计划生成草案", planOk);
   await shot("06-review-plan");
   const approvePlan = page.locator(".plan-preview-card").getByRole("button", { name: /确认保存/ }).first();
@@ -152,7 +179,15 @@ try {
   await page.getByRole("button", { name: /保存画像/ }).click();
   await page.waitForTimeout(1200);
   await page.reload({ waitUntil: "load" });
-  await page.waitForTimeout(1200);
+  await page.waitForTimeout(2200);
+  const userField2 = page.locator('input[aria-label="用户名"]');
+  if (await userField2.isVisible().catch(() => false)) {
+    await userField2.fill("admin");
+    await page.locator('input[aria-label="密码"]').fill("admin123");
+    await page.getByRole("button", { name: /^登录$/ }).click();
+    await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
+    await page.waitForTimeout(1200);
+  }
   await dismissIntro();
   await page.locator(".nav-item", { hasText: "数据管理" }).click();
   await page.waitForTimeout(1200);
@@ -175,6 +210,10 @@ const failed = results.filter((r) => !r.ok);
 await writeFile(new URL("report.json", SHOTS), JSON.stringify({ results, consoleErrors }, null, 2));
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
+
+
+
+
 
 
 

@@ -47,6 +47,9 @@ export async function* runAgentLoop(deps: AgentLoopDeps): AsyncGenerator<LoopEve
     ...deps.history.map((message) => ({ role: message.role, content: message.content })),
     { role: "user", content: deps.goal },
   ];
+  // 护栏：同一轮里"相同工具 + 相同参数"的只读调用只真正执行一次，之后复用结果。
+  // 模型有时会重复查询（尤其换了模型后行为不同），这层保证不浪费时间和额度。
+  const completedReadCalls = new Map<string, ToolExecutionResult>();
 
   for (let stepIndex = 1; stepIndex <= maxSteps; stepIndex += 1) {
     if (deps.signal?.aborted) {
@@ -119,10 +122,17 @@ export async function* runAgentLoop(deps: AgentLoopDeps): AsyncGenerator<LoopEve
       }
 
       let result: ToolExecutionResult;
-      try {
-        result = await deps.execute(call);
-      } catch (error) {
-        result = { ok: false, summary: errorMessage(error) };
+      const cacheKey = `${call.name}:${JSON.stringify(call.arguments)}`;
+      const cached = spec.requiresConfirmation ? undefined : completedReadCalls.get(cacheKey);
+      if (cached) {
+        result = { ok: cached.ok, summary: `${cached.summary}（同一查询已执行过，直接复用结果，请勿重复调用）`, data: cached.data };
+      } else {
+        try {
+          result = await deps.execute(call);
+        } catch (error) {
+          result = { ok: false, summary: errorMessage(error) };
+        }
+        if (!spec.requiresConfirmation && result.ok) completedReadCalls.set(cacheKey, result);
       }
       pushToolResult(messages, call, result);
       yield { type: "tool_result", call, result, confirmed: spec.requiresConfirmation ? true : null };
@@ -152,3 +162,4 @@ function pushToolResult(messages: AgentWireMessage[], call: AgentToolCall, resul
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "未知错误";
 }
+

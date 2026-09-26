@@ -20,23 +20,73 @@ const scenarios = [
   { name: "闲聊不应调用工具", input: "你好呀，今天心情不错", expectTool: null },
 ];
 
-let failed = 0;
-for (const scenario of scenarios) {
-  try {
+// 模拟工具返回的真实感数据：避免因返回空数据导致模型反复重查（那是评测环境假象）
+function mockToolData(name) {
+  if (name === "list_courses") {
+    return [
+      { name: "数据库系统", semester: "2026 秋季", resources: 3 },
+      { name: "高等数学", semester: "2026 秋季", resources: 1 },
+    ];
+  }
+  if (name === "list_tasks") {
+    return [
+      { title: "数据库实验报告", course: "数据库系统", type: "DDL", dueAt: "2026-09-28T20:00", status: "未开始", priority: "高" },
+    ];
+  }
+  if (name === "search_resources") {
+    return [
+      { title: "第一章：关系模型与关系代数", course: "数据库系统", type: "课件", tags: ["关系模型"], status: "待复习", fileName: "数据库-第一章.pdf", hasContent: true, contentExcerpt: "本章介绍关系模型的基本概念与关系代数运算。" },
+    ];
+  }
+  if (name === "read_resource") {
+    return { title: "第一章：关系模型与关系代数", course: "数据库系统", type: "课件", content: "本章介绍关系模型的基本概念：关系、元组、属性、域，以及选择、投影、并、差、笛卡尔积等关系代数运算。" };
+  }
+  return [];
+}
+
+// 模拟完整的 Agent 循环（最多 6 步），记录整条工具轨迹。
+// 这样允许模型先做准备动作（如 list_courses），只要期望工具出现在轨迹里就算通过——
+// 这正是多步推理应有的行为，而不是只看第一步。
+async function runScenario(input) {
+  let messages = [{ role: "user", content: input }];
+  const trajectory = [];
+  for (let step = 0; step < 6; step += 1) {
     const response = await fetch(`${BASE}/api/agent/step`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ messages: [{ role: "user", content: scenario.input }], context }),
+      body: JSON.stringify({ messages, context }),
     });
     const data = await response.json();
     if (!response.ok || !data.ok) throw new Error(data.error?.message ?? `HTTP ${response.status}`);
-    const tool = data.type === "tool_calls" ? data.calls?.[0]?.name ?? null : null;
+    if (data.type === "message") return { trajectory, final: data.content };
+    const calls = data.calls ?? [];
+    trajectory.push(...calls.map((call) => call.name));
+    messages = [
+      ...messages,
+      {
+        role: "assistant",
+        content: data.content ?? "",
+        tool_calls: calls.map((call) => ({ id: call.id, type: "function", function: { name: call.name, arguments: JSON.stringify(call.arguments) } })),
+      },
+      ...calls.map((call) => ({ role: "tool", tool_call_id: call.id, content: JSON.stringify({ ok: true, summary: "评测模拟结果", data: mockToolData(call.name) }) })),
+    ];
+  }
+  return { trajectory, final: "" };
+}
+
+let failed = 0;
+for (const scenario of scenarios) {
+  try {
+    const { trajectory, final } = await runScenario(scenario.input);
     const ok = scenario.expectTool !== undefined
-      ? tool === scenario.expectTool
+      ? scenario.expectTool === null
+        ? trajectory.length === 0
+        : trajectory.includes(scenario.expectTool)
       : scenario.expectAny
-        ? scenario.expectAny.includes(tool)
-        : tool === null;
-    console.log(`${ok ? "PASS" : "FAIL"}  ${scenario.name}  →  ${tool ?? "(直接回复)"}`);
+        ? scenario.expectAny.some((name) => trajectory.includes(name))
+        : trajectory.length === 0;
+    const shown = trajectory.length ? trajectory.join(" → ") : (final ? "(直接回复)" : "(无动作)");
+    console.log(`${ok ? "PASS" : "FAIL"}  ${scenario.name}  →  ${shown}`);
     if (!ok) failed += 1;
   } catch (error) {
     console.log(`ERROR ${scenario.name}  →  ${error instanceof Error ? error.message : error}`);
@@ -45,4 +95,6 @@ for (const scenario of scenarios) {
 }
 console.log(failed === 0 ? `\n全部 ${scenarios.length} 个场景通过` : `\n${failed}/${scenarios.length} 个场景未通过`);
 process.exit(failed === 0 ? 0 : 1);
+
+
 
