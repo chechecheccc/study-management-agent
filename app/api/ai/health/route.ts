@@ -1,18 +1,16 @@
-// 健康检查：分别报告文件抽取（GLM）与 Agent 循环（DeepSeek）的配置状态，不返回密钥。
+// 健康检查：文件抽取与 Agent 循环都使用 DeepSeek，分别报告各自模型，不返回密钥。
 export async function GET() {
-  const extractConfigured = Boolean(process.env.GLM_API_KEY?.trim());
-  const agentConfigured = Boolean(process.env.DEEPSEEK_API_KEY?.trim());
+  const configured = Boolean(process.env.DEEPSEEK_API_KEY?.trim());
   return Response.json(
     {
       ok: true,
-      // configured 供前端判断"是否可以在线对话/识别"，两个链路都要可用
-      configured: extractConfigured && agentConfigured,
+      configured,
       extract: {
-        configured: extractConfigured,
-        model: process.env.GLM_MODEL?.trim() || "glm-5v-turbo",
+        configured,
+        model: process.env.DEEPSEEK_EXTRACT_MODEL?.trim() || "deepseek-v4-flash",
       },
       agent: {
-        configured: agentConfigured,
+        configured,
         model: process.env.DEEPSEEK_AGENT_MODEL?.trim() || "deepseek-v4-flash",
       },
     },

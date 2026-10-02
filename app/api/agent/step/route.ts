@@ -1,4 +1,4 @@
-// Agent 单步代理：接收对话消息，调用 GLM function calling，返回规范化的
+// Agent 单步代理：接收对话消息，调用 DeepSeek function calling，返回规范化的
 // "一步"结果（文本回复或工具调用）。Agent 循环的驱动在客户端，本路由无状态。
 // 密钥只存在于服务端环境变量，与 /api/ai/extract 同一套安全约定。
 import { sanitizeAgentContext, sanitizeAgentMessages } from "../../../agent/protocol";
@@ -6,23 +6,23 @@ import type { AgentToolCall } from "../../../agent/protocol";
 import { buildAgentSystemPrompt } from "../../../agent/prompts";
 import { toolSchemasForModel } from "../../../agent/tools";
 
-// Agent 循环使用 DeepSeek（OpenAI 兼容接口），与文件抽取用的 GLM 分开配置
+// Agent 对话与工具调用：DeepSeek V4.1 Flash（OpenAI 兼容接口）
 const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
 const DEFAULT_AGENT_MODEL = "deepseek-v4-flash";
 const MAX_REQUEST_BYTES = 1_000_000;
 const TIMEOUT_MS = 55_000;
 
-type GlmToolCall = {
+type ModelToolCall = {
   id?: string;
   type?: string;
   function?: { name?: string; arguments?: string };
 };
 
-type GlmStepResponse = {
+type ModelStepResponse = {
   choices?: Array<{
     message?: {
       content?: string | Array<{ type?: string; text?: string }>;
-      tool_calls?: GlmToolCall[];
+      tool_calls?: ModelToolCall[];
     };
   }>;
   request_id?: string;
@@ -85,8 +85,9 @@ export async function POST(request: Request) {
         ],
         tools: toolSchemasForModel(),
         tool_choice: "auto",
+        // 同理：不设 max_tokens 时，关闭思考可保证工具调用一定能输出完整 JSON。
+        thinking: { type: process.env.DEEPSEEK_AGENT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" },
         temperature: 0.3,
-        max_tokens: 2048,
         stream: false,
       }),
       signal: controller.signal,
@@ -103,7 +104,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = (await upstream.json()) as GlmStepResponse;
+    const data = (await upstream.json()) as ModelStepResponse;
     const message = data.choices?.[0]?.message;
     if (!message) {
       return errorResponse("EMPTY_MODEL_RESPONSE", "模型没有返回内容。", 502, true);
@@ -129,7 +130,7 @@ export async function POST(request: Request) {
   }
 }
 
-function normalizeToolCalls(toolCalls: GlmToolCall[] | undefined): AgentToolCall[] {
+function normalizeToolCalls(toolCalls: ModelToolCall[] | undefined): AgentToolCall[] {
   if (!Array.isArray(toolCalls)) return [];
   return toolCalls
     .map((call, index) => {
@@ -190,6 +191,10 @@ function jsonResponse(body: unknown, status = 200) {
 function errorResponse(code: string, message: string, status: number, fallback = false) {
   return jsonResponse({ ok: false, error: { code, message }, fallback }, status);
 }
+
+
+
+
 
 
 

@@ -1712,7 +1712,7 @@ function AssistantView({
             <span className={`online-dot ${modelConfigured === false ? "offline" : ""}`} />
             学习管家智能体
             <span className="head-note">
-              本地优先 · {modelConfigured === null ? "正在检查模型" : modelConfigured ? "GLM Agent 循环在线" : "手动模式可用"}
+              本地优先 · {modelConfigured === null ? "正在检查模型" : modelConfigured ? "DeepSeek Agent 循环在线" : "手动模式可用"}
             </span>
           </div>
           <div className="message-list">
@@ -2085,6 +2085,7 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
 
 
 

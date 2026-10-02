@@ -64,15 +64,15 @@ test("Sprint 2 model proxy keeps credentials server-side", async () => {
     read(".env.example"),
   ]);
 
-  assert.match(route, /process\.env\.GLM_API_KEY/);
-  assert.match(route, /glm-5v-turbo/);
+  assert.match(route, /process\.env\.DEEPSEEK_API_KEY/);
+  assert.match(route, /deepseek-v4-flash/);
   assert.match(route, /Cache-Control/);
   assert.match(route, /isSameOriginRequest/);
   assert.match(contract, /requiresConfirmation: true/);
   assert.match(contract, /MAX_IMAGE_DATA_LENGTH/);
   assert.match(page, /\/api\/ai\/extract/);
   assert.match(page, /确认并保存/);
-  assert.match(envExample, /GLM_API_KEY=replace-with-your-server-side-key/);
+  assert.match(envExample, /DEEPSEEK_API_KEY=replace-with-your-deepseek-key/);
   assert.doesNotMatch(`${route}\n${contract}\n${page}\n${envExample}`, /[a-f0-9]{32}\.[A-Za-z0-9]{16,}/);
 });
 
@@ -158,4 +158,5 @@ test("full-screen study intro is wired to the app entry", async () => {
   assert.match(css, /\.intro-grid \{/);
   assert.match(css, /\.intro-core \{/);
 });
+
 

@@ -72,6 +72,7 @@ export function buildProactiveFallback(signals: ProactiveSignal[]): string {
     .slice(0, 3)
     .map((signal) => signal.title)
     .join("；");
-  return `我巡检了你的学习空间，需要关注：${headline}。当前模型未配置，接入 GLM 后我可以给出更具体的安排建议。`;
+  return `我巡检了你的学习空间，需要关注：${headline}。当前模型未配置，接入在线模型后我可以给出更具体的安排建议。`;
 }
+
 

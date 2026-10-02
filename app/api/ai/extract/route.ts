@@ -5,12 +5,13 @@ import {
   validateExtractRequest,
 } from "../../../lib/ai-contract";
 
-const DEFAULT_ENDPOINT = "https://open.bigmodel.cn/api/paas/v4/chat/completions";
-const DEFAULT_MODEL = "glm-5v-turbo";
+// 文件/截图信息抽取：DeepSeek V4.1 Flash（原生多模态）
+const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
+const DEFAULT_MODEL = "deepseek-v4-flash";
 const MAX_REQUEST_BYTES = 14_500_000;
 const TIMEOUT_MS = 55_000;
 
-type GlmResponse = {
+type ModelResponse = {
   choices?: Array<{ message?: { content?: string | Array<{ type?: string; text?: string }> } }>;
   request_id?: string;
 };
@@ -41,7 +42,7 @@ export async function POST(request: Request) {
     return errorResponse("INVALID_INPUT", validated.message, 400);
   }
 
-  const apiKey = process.env.GLM_API_KEY?.trim();
+  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
   if (!apiKey) {
     return errorResponse(
       "MODEL_NOT_CONFIGURED",
@@ -55,13 +56,13 @@ export async function POST(request: Request) {
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const upstream = await fetch(process.env.GLM_API_URL?.trim() || DEFAULT_ENDPOINT, {
+    const upstream = await fetch(process.env.DEEPSEEK_API_URL?.trim() || DEFAULT_ENDPOINT, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildGlmPayload(validated.value)),
+      body: JSON.stringify(buildModelPayload(validated.value)),
       signal: controller.signal,
     });
 
@@ -76,7 +77,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const data = (await upstream.json()) as GlmResponse;
+    const data = (await upstream.json()) as ModelResponse;
     const content = readMessageContent(data);
     if (!content) {
       return errorResponse("EMPTY_MODEL_RESPONSE", "模型没有返回可识别内容。", 502, true);
@@ -87,7 +88,7 @@ export async function POST(request: Request) {
       return jsonResponse({
         ok: true,
         result,
-        model: process.env.GLM_MODEL?.trim() || DEFAULT_MODEL,
+        model: process.env.DEEPSEEK_EXTRACT_MODEL?.trim() || DEFAULT_MODEL,
         requestId: data.request_id ?? null,
       });
     } catch {
@@ -108,7 +109,7 @@ export async function POST(request: Request) {
   }
 }
 
-function buildGlmPayload(request: ExtractRequest) {
+function buildModelPayload(request: ExtractRequest) {
   const prompt = buildExtractionPrompt(request);
   const content = request.mode === "image"
     ? [
@@ -118,7 +119,7 @@ function buildGlmPayload(request: ExtractRequest) {
     : prompt;
 
   return {
-    model: process.env.GLM_MODEL?.trim() || DEFAULT_MODEL,
+    model: process.env.DEEPSEEK_EXTRACT_MODEL?.trim() || DEFAULT_MODEL,
     messages: [
       {
         role: "system",
@@ -126,14 +127,16 @@ function buildGlmPayload(request: ExtractRequest) {
       },
       { role: "user", content },
     ],
-    thinking: { type: "enabled" },
+    // DeepSeek 默认会先输出思考内容，思考 token 会占用输出预算；
+    // 不设 max_tokens 时可能截断正文导致抽取失败，因此抽取链路默认关闭思考。
+    // 需要更强推理时可设 DEEPSEEK_EXTRACT_THINKING=enabled（届时建议同时放宽 token 预算）。
+    thinking: { type: process.env.DEEPSEEK_EXTRACT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" },
     temperature: 0.1,
-    max_tokens: 4096,
     stream: false,
   };
 }
 
-function readMessageContent(data: GlmResponse) {
+function readMessageContent(data: ModelResponse) {
   const content = data.choices?.[0]?.message?.content;
   if (typeof content === "string") return content;
   if (Array.isArray(content)) {
@@ -165,3 +168,5 @@ function jsonResponse(body: unknown, status = 200) {
 function errorResponse(code: string, message: string, status: number, fallback = false) {
   return jsonResponse({ ok: false, error: { code, message }, fallback }, status);
 }
+
+
