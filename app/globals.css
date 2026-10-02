@@ -469,3 +469,11 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .quiet-button.danger { background: #fae7e1; color: #975348; border-color: #e8c8bf; }
 .account-success { margin-top: 10px; border-radius: 9px; background: #eef4ea; color: #4f6b4c; padding: 9px 11px; font-size: 11px; }
 @media (max-width: 900px) { .account-grid { grid-template-columns: 1fr; } }
+
+/* ---------- 对话内多模态图片 ---------- */
+.chat-image-strip { display: flex; gap: 8px; flex-wrap: wrap; margin: 0 20px 8px 35px; }
+.chat-image-tile { position: relative; width: 72px; height: 72px; border-radius: 10px; overflow: hidden; border: 1px solid var(--line); background: #fff; }
+.chat-image-tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.chat-image-tile button { position: absolute; top: 2px; right: 2px; width: 18px; height: 18px; border: none; border-radius: 50%; background: rgba(22,33,29,.72); color: #fff; font-size: 12px; line-height: 1; cursor: pointer; padding: 0; }
+.message-images { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.message-images img { max-width: 180px; max-height: 180px; border-radius: 10px; border: 1px solid var(--line); display: block; }

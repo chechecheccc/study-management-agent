@@ -4,11 +4,16 @@
 //   - execute()            由调用方实现（前端注入本地数据层的读写）
 //   - requestConfirmation  写操作触发人在回路确认，循环挂起等待用户决定
 // 通过 async generator 逐事件输出，UI 层可以实时渲染"思考轨迹"。
-import type { AgentStepResponse, AgentToolCall, AgentWireMessage } from "./protocol.ts";
+import type { AgentStepResponse, AgentToolCall, AgentWireContent, AgentWireMessage } from "./protocol.ts";
 import { MAX_TOOL_RESULT_CHARS } from "./protocol.ts";
 import { getToolSpec } from "./tools.ts";
 
-export type HistoryMessage = { role: "user" | "assistant"; content: string };
+export type HistoryMessage = {
+  role: "user" | "assistant";
+  content: string;
+  /** 该条消息附带的图片（data URL），用于多模态追问 */
+  images?: string[];
+};
 
 export type ToolExecutionResult = {
   ok: boolean;
@@ -31,6 +36,8 @@ export type LoopEvent =
 
 export type AgentLoopDeps = {
   goal: string;
+  /** 本轮用户消息附带的图片（data URL），会作为多模态输入发给模型 */
+  goalImages?: string[];
   history: HistoryMessage[];
   step: (messages: AgentWireMessage[], signal?: AbortSignal) => Promise<AgentStepResponse>;
   execute: (call: AgentToolCall) => Promise<ToolExecutionResult>;
@@ -44,8 +51,11 @@ export const DEFAULT_MAX_STEPS = 8;
 export async function* runAgentLoop(deps: AgentLoopDeps): AsyncGenerator<LoopEvent, void> {
   const maxSteps = deps.maxSteps ?? DEFAULT_MAX_STEPS;
   const messages: AgentWireMessage[] = [
-    ...deps.history.map((message) => ({ role: message.role, content: message.content })),
-    { role: "user", content: deps.goal },
+    ...deps.history.map((message) => ({
+      role: message.role,
+      content: toWireContent(message.content, message.role === "user" ? message.images : undefined),
+    })),
+    { role: "user", content: toWireContent(deps.goal, deps.goalImages) },
   ];
   // 护栏：同一轮里"相同工具 + 相同参数"的只读调用只真正执行一次，之后复用结果。
   // 模型有时会重复查询（尤其换了模型后行为不同），这层保证不浪费时间和额度。
@@ -146,6 +156,16 @@ export async function* runAgentLoop(deps: AgentLoopDeps): AsyncGenerator<LoopEve
   yield { type: "done", reason: "max_steps" };
 }
 
+// 纯文本返回字符串；带图片时返回"文本 + 图片"片段数组（多模态输入）
+function toWireContent(text: string, images?: string[]): AgentWireContent {
+  const valid = (images ?? []).filter((url) => /^data:image\//i.test(url)).slice(0, 4);
+  if (!valid.length) return text;
+  return [
+    { type: "text", text },
+    ...valid.map((url) => ({ type: "image_url" as const, image_url: { url } })),
+  ];
+}
+
 function pushToolResult(messages: AgentWireMessage[], call: AgentToolCall, result: ToolExecutionResult) {
   const payload = JSON.stringify({
     ok: result.ok,
@@ -162,4 +182,5 @@ function pushToolResult(messages: AgentWireMessage[], call: AgentToolCall, resul
 function errorMessage(error: unknown) {
   return error instanceof Error ? error.message : "未知错误";
 }
+
 

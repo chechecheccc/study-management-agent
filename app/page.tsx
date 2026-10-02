@@ -75,6 +75,8 @@ type ChatMessage = {
   role: "user" | "assistant";
   text: string;
   steps?: ToolStep[];
+  /** 用户消息附带的图片（data URL），可被多模态模型直接查看 */
+  images?: string[];
 };
 
 type TaskConfirmDraft = {
@@ -147,6 +149,11 @@ export default function Home() {
   // 用户消息排队：Agent 忙时先记下，空闲后自动发出
   const [queuedMessage, setQueuedMessage] = useState<string | null>(null);
   const queuedMessageRef = useRef<string | null>(null);
+  // 待发送给智能体的图片（可粘贴或选择）
+  const [chatImages, setChatImages] = useState<string[]>([]);
+  const chatImagesRef = useRef<string[]>([]);
+  const queuedImagesRef = useRef<string[]>([]);
+  const chatImageInputRef = useRef<HTMLInputElement>(null);
   // 聊天消息首次出现的时间（保证刷新后顺序稳定）
   const chatTimestampsRef = useRef(new Map<string, string>());
   const [extractError, setExtractError] = useState("");
@@ -273,6 +280,8 @@ export default function Home() {
     setReminderScope(account.id);
     setReady(false);
     chatTimestampsRef.current = new Map();
+    chatImagesRef.current = [];
+    setChatImages([]);
     setProfile(loadProfile());
 
     const [stored, chat] = await Promise.all([loadSnapshot(), loadChatLog()]);
@@ -281,7 +290,7 @@ export default function Home() {
     if (!stored.courses.length) void saveSnapshot(next);
     setMessages(
       chat.length
-        ? chat.map((record) => ({ id: record.id, role: record.role, text: record.text, steps: record.steps }))
+        ? chat.map((record) => ({ id: record.id, role: record.role, text: record.text, steps: record.steps, images: record.images }))
         : initialMessages,
     );
     setImportQueue([]);
@@ -350,6 +359,7 @@ export default function Home() {
         role: message.role,
         text: message.text,
         steps: message.steps,
+        images: message.images,
         createdAt: chatTimestampsRef.current.get(message.id) ?? new Date(Date.now() + index).toISOString(),
       }));
     records.forEach((record) => {
@@ -777,7 +787,7 @@ export default function Home() {
     );
   };
 
-  const runAgent = async (goal: string, options?: { background?: boolean }) => {
+  const runAgent = async (goal: string, goalImages: string[] = [], options?: { background?: boolean }) => {
     if (agentRunningRef.current) return;
     agentRunningRef.current = true;
     setAgentRunning(true);
@@ -790,6 +800,7 @@ export default function Home() {
     try {
       for await (const event of runAgentLoop({
         goal,
+        goalImages,
         history: agentHistoryRef.current,
         step: requestAgentStep,
         execute: executeAgentTool,
@@ -828,7 +839,7 @@ export default function Home() {
       }
       const nextHistory: HistoryMessage[] = [
         ...agentHistoryRef.current,
-        { role: "user", content: goal },
+        { role: "user", content: goal || "[图片]", images: goalImages.length ? goalImages : undefined },
         { role: "assistant", content: finalText },
       ];
       agentHistoryRef.current = nextHistory.slice(-12);
@@ -839,28 +850,59 @@ export default function Home() {
       // 上一轮结束后，自动发送排队中的用户消息（用户等待期间输入的内容不会被丢弃）
       const pending = queuedMessageRef.current;
       if (pending) {
+        const pendingImages = queuedImagesRef.current;
         queuedMessageRef.current = null;
+        queuedImagesRef.current = [];
         setQueuedMessage(null);
-        window.setTimeout(() => { void runAgent(pending); }, 0);
+        window.setTimeout(() => { void runAgent(pending, pendingImages); }, 0);
       }
     }
   };
 
 
+  const syncChatImages = (next: string[]) => {
+    chatImagesRef.current = next;
+    setChatImages(next);
+  };
+
+  const attachChatImages = (files: File[]) => {
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    if (!images.length) return;
+    void Promise.all(images.slice(0, 4).map((file) => readAsDataUrl(file))).then((urls) => {
+      syncChatImages([...chatImagesRef.current, ...urls].slice(0, 4));
+    });
+  };
+
+  const removeChatImage = (index: number) => {
+    syncChatImages(chatImagesRef.current.filter((_, i) => i !== index));
+  };
+
+  // 直接粘贴截图（Ctrl+V）
+  const handleComposerPaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
+    const files = Array.from(event.clipboardData?.files ?? []);
+    if (!files.some((file) => file.type.startsWith("image/"))) return;
+    event.preventDefault();
+    attachChatImages(files);
+  };
+
   const sendMessage = async () => {
     const text = input.trim();
-    if (!text || batchRunningRef.current) return;
+    // 允许只发图片（用户可能只想问"这张图是什么"）
+    if ((!text && !chatImagesRef.current.length) || batchRunningRef.current) return;
+    const images = chatImagesRef.current;
     if (agentRunningRef.current) {
       // Agent 仍在处理上一条（例如后台巡检）：排队等它结束后自动发送，而不是丢消息
       setInput("");
-      setMessages((current) => [...current, { id: makeId("message"), role: "user", text }]);
+      setMessages((current) => [...current, { id: makeId("message"), role: "user", text, images: images.length ? images : undefined }]);
       queuedMessageRef.current = text;
+      queuedImagesRef.current = images;
       setQueuedMessage(text);
       return;
     }
-    setMessages((current) => [...current, { id: makeId("message"), role: "user", text }]);
+    setMessages((current) => [...current, { id: makeId("message"), role: "user", text, images: images.length ? images : undefined }]);
     setInput("");
-    await runAgent(text);
+    syncChatImages([]);
+    await runAgent(text, images);
   };
 
   const generateReviewPlan = (courseId: string, examAt: string, availability: string) => {
@@ -895,7 +937,7 @@ export default function Home() {
       // 忽略存储失败，明天再提醒一次也无妨
     }
     if (modelConfigured) {
-      void runAgent(buildProactiveGoal(signals), { background: true });
+      void runAgent(buildProactiveGoal(signals), [], { background: true });
     } else {
       addAssistantMessage(buildProactiveFallback(signals));
     }
@@ -1478,6 +1520,11 @@ export default function Home() {
               agentRunning={agentRunning}
               agentBackground={agentBackground}
               queuedMessage={queuedMessage}
+              chatImages={chatImages}
+              chatImageInputRef={chatImageInputRef}
+              onAttachImages={attachChatImages}
+              onRemoveImage={removeChatImage}
+              onPasteImage={handleComposerPaste}
               pendingTaskConfirm={pendingTaskConfirm}
               taskConfirmDraft={taskConfirmDraft}
               setTaskConfirmDraft={setTaskConfirmDraft}
@@ -1630,6 +1677,11 @@ function AssistantView({
   agentRunning,
   agentBackground,
   queuedMessage,
+  chatImages,
+  chatImageInputRef,
+  onAttachImages,
+  onRemoveImage,
+  onPasteImage,
   pendingTaskConfirm,
   taskConfirmDraft,
   setTaskConfirmDraft,
@@ -1667,6 +1719,11 @@ function AssistantView({
   agentRunning: boolean;
   agentBackground: boolean;
   queuedMessage: string | null;
+  chatImages: string[];
+  chatImageInputRef: React.RefObject<HTMLInputElement | null>;
+  onAttachImages: (files: File[]) => void;
+  onRemoveImage: (index: number) => void;
+  onPasteImage: (event: React.ClipboardEvent<HTMLInputElement>) => void;
   pendingTaskConfirm: AgentToolCall | null;
   taskConfirmDraft: TaskConfirmDraft | null;
   setTaskConfirmDraft: React.Dispatch<React.SetStateAction<TaskConfirmDraft | null>>;
@@ -1720,6 +1777,14 @@ function AssistantView({
               <div className={`message-row ${message.role} gsap-message`} key={message.id}>
                 <div className="avatar">{message.role === "assistant" ? "学" : "我"}</div>
                 <div className="message-stack">
+                  {message.images?.length ? (
+                    <div className="message-images">
+                      {message.images.map((image, index) => (
+
+                        <img key={`${message.id}-img-${index}`} src={image} alt={`消息附图 ${index + 1}`} />
+                      ))}
+                    </div>
+                  ) : null}
                   <div className="message-bubble">
                     {message.text ? message.text : (
                       <span className="thinking-placeholder"><span className="progress-spinner" />正在思考与行动…</span>
@@ -1780,15 +1845,40 @@ function AssistantView({
             {extractError ? <div className="extract-error">{extractError}</div> : null}
           </div>
           {queuedMessage ? <div className="queued-note"><span className="progress-spinner" />已排队，等智能体完成当前任务后会自动发送</div> : null}
+          {chatImages.length ? (
+            <div className="chat-image-strip" aria-label="待发送图片">
+              {chatImages.map((image, index) => (
+                <div className="chat-image-tile" key={`${image.slice(0, 32)}-${index}`}>
+
+                  <img src={image} alt={`待发送图片 ${index + 1}`} />
+                  <button type="button" aria-label={`移除图片 ${index + 1}`} onClick={() => onRemoveImage(index)}>×</button>
+                </div>
+              ))}
+            </div>
+          ) : null}
           <div className="composer">
             <input
               value={input}
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter" && !busy) onSend(); }}
-              placeholder="交给智能体：查 DDL、找资料、安排复习…"
+              onPaste={(event) => { if (!busy) onPasteImage(event); }}
+              placeholder="交给智能体：查 DDL、找资料、安排复习…也可以直接粘贴截图"
               aria-label="输入学习管理需求"
               disabled={busy}
             />
+            <input
+              ref={chatImageInputRef}
+              type="file"
+              accept="image/*"
+              multiple
+              hidden
+              onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                onAttachImages(files);
+                event.currentTarget.value = "";
+              }}
+            />
+            <button className="attach-button" title="发送图片给智能体看（也可直接粘贴截图）" onClick={() => chatImageInputRef.current?.click()} disabled={busy}>▣</button>
             <input
               ref={attachmentInputRef}
               type="file"
@@ -2085,6 +2175,13 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
+
+
 
 
 

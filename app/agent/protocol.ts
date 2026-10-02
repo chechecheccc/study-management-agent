@@ -7,8 +7,15 @@ export type AgentWireToolCall = {
   function: { name: string; arguments: string };
 };
 
+// 多模态内容片段：文本 + 图片（OpenAI 兼容格式，DeepSeek 原生支持）
+export type AgentContentPart =
+  | { type: "text"; text: string }
+  | { type: "image_url"; image_url: { url: string } };
+
+export type AgentWireContent = string | AgentContentPart[];
+
 export type AgentWireMessage =
-  | { role: "system" | "user" | "assistant"; content: string; tool_calls?: AgentWireToolCall[] }
+  | { role: "system" | "user" | "assistant"; content: AgentWireContent; tool_calls?: AgentWireToolCall[] }
   | { role: "tool"; tool_call_id: string; content: string };
 
 export type AgentToolCall = {
@@ -28,6 +35,9 @@ export type AgentRequestContext = {
 };
 
 export const MAX_HISTORY_MESSAGES = 30;
+// 多模态限制：单条消息最多 4 张图，单张 base64 长度上限约 12MB（应用侧限制 10MB）
+export const MAX_IMAGES_PER_MESSAGE = 4;
+export const MAX_IMAGE_DATA_CHARS = 12_000_000;
 export const MAX_MESSAGE_CHARS = 8000;
 export const MAX_TOOL_RESULT_CHARS = 4000;
 
@@ -51,7 +61,7 @@ export function sanitizeAgentMessages(value: unknown): AgentWireMessage[] {
     if (item.role !== "user" && item.role !== "assistant" && item.role !== "system") continue;
     const message: AgentWireMessage = {
       role: item.role,
-      content: cleanContent(item.content, MAX_MESSAGE_CHARS),
+      content: sanitizeContent(item.content, item.role),
     };
     if (item.role === "assistant" && Array.isArray(item.tool_calls)) {
       const toolCalls = item.tool_calls
@@ -60,7 +70,10 @@ export function sanitizeAgentMessages(value: unknown): AgentWireMessage[] {
         .slice(0, 8);
       if (toolCalls.length) message.tool_calls = toolCalls;
     }
-    if (!message.content && !message.tool_calls?.length) continue;
+    const hasContent = typeof message.content === "string"
+      ? message.content.length > 0
+      : message.content.some((part) => part.type === "text" ? part.text.length > 0 : true);
+    if (!hasContent && !message.tool_calls?.length) continue;
     messages.push(message);
   }
 
@@ -102,7 +115,46 @@ function cleanContent(value: unknown, max: number) {
   return typeof value === "string" ? value.slice(0, max) : "";
 }
 
+// 内容可以是纯文本，也可以是"文本 + 图片"片段数组。
+// 只有 user 角色允许带图片；图片必须是 data:image/* 的 base64，且有大小与数量上限。
+function sanitizeContent(value: unknown, role: string): AgentWireContent {
+  if (typeof value === "string") return value.slice(0, MAX_MESSAGE_CHARS);
+  if (!Array.isArray(value)) return "";
+  // 非用户角色不支持图片：只保留其中的文本片段，避免把可用内容整条丢掉
+  if (role !== "user") {
+    return value
+      .filter((item): item is { type: "text"; text: string } =>
+        isRecord(item) && item.type === "text" && typeof item.text === "string")
+      .map((item) => item.text)
+      .join("")
+      .slice(0, MAX_MESSAGE_CHARS);
+  }
+
+  const parts: AgentContentPart[] = [];
+  let imageCount = 0;
+  for (const item of value) {
+    if (!isRecord(item)) continue;
+    if (item.type === "text" && typeof item.text === "string") {
+      const text = item.text.slice(0, MAX_MESSAGE_CHARS);
+      if (text) parts.push({ type: "text", text });
+      continue;
+    }
+    if (item.type === "image_url" && isRecord(item.image_url) && typeof item.image_url.url === "string") {
+      const url = item.image_url.url;
+      if (imageCount >= MAX_IMAGES_PER_MESSAGE) continue;
+      if (url.length > MAX_IMAGE_DATA_CHARS) continue;
+      if (!/^data:image\/(png|jpe?g|webp|gif);base64,/i.test(url)) continue;
+      parts.push({ type: "image_url", image_url: { url } });
+      imageCount += 1;
+    }
+  }
+  return parts;
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+
+
+
 

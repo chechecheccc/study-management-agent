@@ -349,3 +349,84 @@ test("用户名规范化与唯一性校验", async () => {
   assert.equal(ok.ok, true);
   assert.equal(ok.ok && ok.username, "student2");
 });
+
+// ---------- 多模态输入测试 ----------
+
+import { MAX_IMAGES_PER_MESSAGE } from "../app/agent/protocol.ts";
+
+test("协议：用户消息可携带图片（多模态片段）", () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+  const messages = sanitizeAgentMessages([
+    { role: "user", content: [{ type: "text", text: "这张图写了什么？" }, { type: "image_url", image_url: { url: png } }] },
+  ]);
+  assert.equal(messages.length, 1);
+  const content = messages[0].content;
+  assert.ok(Array.isArray(content));
+  assert.equal(content[0].type, "text");
+  assert.equal(content[1].type, "image_url");
+  assert.equal(content[1].image_url.url, png);
+});
+
+test("协议：图片校验（非法来源/超量/非用户角色都要拦掉）", () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+  // 非图片 data URL 被丢弃
+  const wrongScheme = sanitizeAgentMessages([
+    { role: "user", content: [{ type: "text", text: "hi" }, { type: "image_url", image_url: { url: "https://evil.example/x.png" } }] },
+  ]);
+  assert.equal(wrongScheme[0].content.filter((p) => p.type === "image_url").length, 0);
+  // assistant 不允许带图片：图片被剔除后若无正文，整条消息丢弃
+  const assistantImages = sanitizeAgentMessages([
+    { role: "assistant", content: [{ type: "image_url", image_url: { url: png } }] },
+  ]);
+  assert.equal(assistantImages.length, 0);
+  // assistant 有正文时保留正文、丢弃图片
+  const assistantWithText = sanitizeAgentMessages([
+    { role: "assistant", content: [{ type: "text", text: "看这张" }, { type: "image_url", image_url: { url: png } }] },
+  ]);
+  assert.equal(assistantWithText.length, 1);
+  assert.equal(assistantWithText[0].content, "看这张");
+  // 数量上限
+  const many = sanitizeAgentMessages([
+    { role: "user", content: [{ type: "text", text: "图" }, ...Array.from({ length: 8 }, () => ({ type: "image_url", image_url: { url: png } }))] },
+  ]);
+  assert.equal(many[0].content.filter((p) => p.type === "image_url").length, MAX_IMAGES_PER_MESSAGE);
+});
+
+test("循环：goalImages 会作为多模态输入传给模型", async () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+  let seen = null;
+  const events = await collect(runAgentLoop({
+    goal: "这张图是什么？",
+    goalImages: [png],
+    history: [],
+    step: async (messages) => {
+      seen = messages;
+      return { type: "message", content: "是一张课程通知截图。" };
+    },
+    execute: async () => ({ ok: true, summary: "noop" }),
+    requestConfirmation: noopConfirm,
+  }));
+  assert.ok(seen);
+  const userMessage = seen.find((m) => m.role === "user");
+  assert.ok(Array.isArray(userMessage.content));
+  assert.equal(userMessage.content[1].type, "image_url");
+  assert.equal(userMessage.content[1].image_url.url, png);
+  assert.ok(events.some((e) => e.type === "message"));
+});
+
+test("循环：历史消息里的图片也会保留（支持对同一张图追问）", async () => {
+  const png = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUg==";
+  let seen = null;
+  await collect(runAgentLoop({
+    goal: "那截止时间呢？",
+    history: [{ role: "user", content: "这张图写了什么？", images: [png] }],
+    step: async (messages) => { seen = messages; return { type: "message", content: "是 10 月 16 日。" }; },
+    execute: async () => ({ ok: true, summary: "noop" }),
+    requestConfirmation: noopConfirm,
+  }));
+  const historic = seen[0];
+  assert.ok(Array.isArray(historic.content));
+  assert.equal(historic.content[1].image_url.url, png);
+});
+
+

@@ -208,6 +208,8 @@ export type ChatLogRecord = {
   role: "user" | "assistant";
   text: string;
   steps?: Array<{ id: string; label: string; status: "running" | "done" | "failed"; detail?: string }>;
+  /** 用户消息附图（data URL） */
+  images?: string[];
   createdAt: string;
 };
 
@@ -338,6 +340,7 @@ export function demoSnapshot(): AppSnapshot {
 export function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
 
 
 
