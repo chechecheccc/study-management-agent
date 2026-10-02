@@ -154,6 +154,7 @@ export default function Home() {
   const chatImagesRef = useRef<string[]>([]);
   const queuedImagesRef = useRef<string[]>([]);
   const chatImageInputRef = useRef<HTMLInputElement>(null);
+  const [composerHint, setComposerHint] = useState("");
   // 聊天消息首次出现的时间（保证刷新后顺序稳定）
   const chatTimestampsRef = useRef(new Map<string, string>());
   const [extractError, setExtractError] = useState("");
@@ -870,7 +871,17 @@ export default function Home() {
     if (!images.length) return;
     void Promise.all(images.slice(0, 4).map((file) => readAsDataUrl(file))).then((urls) => {
       syncChatImages([...chatImagesRef.current, ...urls].slice(0, 4));
+      setComposerHint("");
     });
+  };
+
+  // 拖拽图片文件到输入区也能附加
+  const handleComposerDrop = (event: React.DragEvent<HTMLElement>) => {
+    const files = Array.from(event.dataTransfer?.files ?? []).filter((file) => file.type.startsWith("image/"));
+    if (!files.length) return;
+    event.preventDefault();
+    setComposerHint("");
+    attachChatImages(files);
   };
 
   const removeChatImage = (index: number) => {
@@ -878,11 +889,41 @@ export default function Home() {
   };
 
   // 直接粘贴截图（Ctrl+V）
+  // 注意：不同来源的剪贴板数据位置不同——截图工具常放在 files 里，
+  // 而从网页「复制图片」时可能只在 items 里带 file，所以两者都要读。
   const handleComposerPaste = (event: React.ClipboardEvent<HTMLInputElement>) => {
-    const files = Array.from(event.clipboardData?.files ?? []);
-    if (!files.some((file) => file.type.startsWith("image/"))) return;
+    const clipboard = event.clipboardData;
+    if (!clipboard) return;
+
+    // files 与 items 通常指向同一份图片数据：优先用 items，为空时才回退到 files，
+    // 否则同一张截图会被读入两次。
+    const fromItems = Array.from(clipboard.items ?? [])
+      .filter((item) => item.kind === "file")
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => Boolean(file));
+    const source = fromItems.length ? fromItems : Array.from(clipboard.files ?? []);
+    const seen = new Set<string>();
+    const images = source
+      .filter((file) => file.type.startsWith("image/"))
+      .filter((file) => {
+        const key = `${file.name}:${file.size}:${file.type}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      });
+    if (!images.length) {
+      // 剪贴板里只有文字/链接（例如复制的是图片网址），明确告诉用户怎么才能发进来
+      const hasText = Boolean(clipboard.getData("text/plain").trim());
+      setComposerHint(
+        hasText
+          ? "粘贴的内容里没有图片数据（可能只是图片链接或文字）。请用截图工具复制图片本身，或点右侧 ▣ 选择图片文件。"
+          : "没有检测到图片，请用截图工具复制图片，或点右侧 ▣ 选择图片文件。",
+      );
+      return;
+    }
     event.preventDefault();
-    attachChatImages(files);
+    setComposerHint("");
+    attachChatImages(images);
   };
 
   const sendMessage = async () => {
@@ -1522,9 +1563,11 @@ export default function Home() {
               queuedMessage={queuedMessage}
               chatImages={chatImages}
               chatImageInputRef={chatImageInputRef}
+              composerHint={composerHint}
               onAttachImages={attachChatImages}
               onRemoveImage={removeChatImage}
               onPasteImage={handleComposerPaste}
+              onDropImage={handleComposerDrop}
               pendingTaskConfirm={pendingTaskConfirm}
               taskConfirmDraft={taskConfirmDraft}
               setTaskConfirmDraft={setTaskConfirmDraft}
@@ -1679,9 +1722,11 @@ function AssistantView({
   queuedMessage,
   chatImages,
   chatImageInputRef,
+  composerHint,
   onAttachImages,
   onRemoveImage,
   onPasteImage,
+  onDropImage,
   pendingTaskConfirm,
   taskConfirmDraft,
   setTaskConfirmDraft,
@@ -1721,9 +1766,11 @@ function AssistantView({
   queuedMessage: string | null;
   chatImages: string[];
   chatImageInputRef: React.RefObject<HTMLInputElement | null>;
+  composerHint: string;
   onAttachImages: (files: File[]) => void;
   onRemoveImage: (index: number) => void;
   onPasteImage: (event: React.ClipboardEvent<HTMLInputElement>) => void;
+  onDropImage: (event: React.DragEvent<HTMLElement>) => void;
   pendingTaskConfirm: AgentToolCall | null;
   taskConfirmDraft: TaskConfirmDraft | null;
   setTaskConfirmDraft: React.Dispatch<React.SetStateAction<TaskConfirmDraft | null>>;
@@ -1845,6 +1892,7 @@ function AssistantView({
             {extractError ? <div className="extract-error">{extractError}</div> : null}
           </div>
           {queuedMessage ? <div className="queued-note"><span className="progress-spinner" />已排队，等智能体完成当前任务后会自动发送</div> : null}
+          {composerHint ? <div className="composer-hint">{composerHint}</div> : null}
           {chatImages.length ? (
             <div className="chat-image-strip" aria-label="待发送图片">
               {chatImages.map((image, index) => (
@@ -1862,7 +1910,9 @@ function AssistantView({
               onChange={(event) => setInput(event.target.value)}
               onKeyDown={(event) => { if (event.key === "Enter" && !busy) onSend(); }}
               onPaste={(event) => { if (!busy) onPasteImage(event); }}
-              placeholder="交给智能体：查 DDL、找资料、安排复习…也可以直接粘贴截图"
+              onDrop={(event) => { if (!busy) onDropImage(event); }}
+              onDragOver={(event) => event.preventDefault()}
+              placeholder="交给智能体：查 DDL、找资料、安排复习…也可以直接粘贴或拖入截图"
               aria-label="输入学习管理需求"
               disabled={busy}
             />
@@ -2175,6 +2225,9 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
 
 
 
