@@ -6,7 +6,7 @@ export function buildICalendar(snapshot: AppSnapshot, now: Date = new Date()): s
   const lines = [
     "BEGIN:VCALENDAR",
     "VERSION:2.0",
-    "PRODID:-//study-agent//学习管家//CN",
+    "PRODID:-//qianqian//浅浅//CN",
     "CALSCALE:GREGORIAN",
   ];
   const courseName = (courseId: string) =>
@@ -42,3 +42,4 @@ function escapeIcsText(text: string) {
     .replace(/,/g, "\\,")
     .replace(/\r?\n/g, "\\n");
 }
+

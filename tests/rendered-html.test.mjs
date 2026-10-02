@@ -15,11 +15,14 @@ test("Sprint 1 product shell replaces the starter preview", async () => {
     read("package.json"),
   ]);
 
-  assert.match(page, /学习管家/);
+  // 产品名：浅浅（英文名 qianqian）；界面不再出现旧品牌与技术标签
+  assert.match(page, /浅浅/);
+  assert.match(page, /qianqian/);
   assert.match(page, /课程资料库/);
   assert.match(page, /任务中心/);
   assert.match(page, /复习计划/);
-  assert.match(layout, /学习管家 · 本地优先学习管理/);
+  assert.match(layout, /浅浅 qianqian · 学习管理/);
+  assert.doesNotMatch(page, /学习管家|本地优先|DeepSeek/);
   assert.doesNotMatch(page, /SkeletonPreview|codex-preview/);
   assert.doesNotMatch(layout, /Starter Project|codex-preview|_sites-preview/);
   assert.doesNotMatch(packageJson, /react-loading-skeleton/);
@@ -161,6 +164,7 @@ test("full-screen study intro is wired to the app entry", async () => {
   assert.match(css, /\.intro-grid \{/);
   assert.match(css, /\.intro-core \{/);
 });
+
 
 
 

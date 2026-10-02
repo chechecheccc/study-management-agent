@@ -13,7 +13,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "学习管家 · 本地优先学习管理",
+  title: "浅浅 qianqian · 学习管理",
   description: "整理课程资料、管理 DDL，并生成可执行的复习计划。",
   icons: {
     icon: "/favicon.svg",
@@ -36,3 +36,4 @@ export default function RootLayout({
     </html>
   );
 }
+

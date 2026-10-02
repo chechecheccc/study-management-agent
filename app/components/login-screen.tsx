@@ -35,16 +35,16 @@ export function LoginScreen({ accounts, onLogin }: Props) {
     <main className="auth-shell">
       <div className="ambient-glow ambient-glow-one" aria-hidden="true" />
       <div className="ambient-glow ambient-glow-two" aria-hidden="true" />
-      <section className="auth-card" aria-label="登录学习管家">
+      <section className="auth-card" aria-label="登录浅浅">
         <div className="auth-brand">
-          <div className="brand-mark">学</div>
+          <div className="brand-mark">浅</div>
           <div>
-            <div className="brand-name">学习管家</div>
-            <div className="brand-caption">personal study agent</div>
+            <div className="brand-name">浅浅</div>
+            <div className="brand-caption">qianqian</div>
           </div>
         </div>
         <h1>登录你的学习空间</h1>
-        <p className="auth-copy">每个账号拥有独立的资料库、任务、复习计划与智能体记忆，数据保存在本机浏览器。</p>
+        <p className="auth-copy">每个账号拥有独立的资料库、任务、复习计划与对话记录。</p>
 
         <form onSubmit={submit} className="auth-form">
           <label>
@@ -94,3 +94,5 @@ export function LoginScreen({ accounts, onLogin }: Props) {
     </main>
   );
 }
+
+

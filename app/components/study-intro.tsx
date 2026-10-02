@@ -69,11 +69,11 @@ export function StudyIntro({ onComplete }: StudyIntroProps) {
   };
 
   return (
-    <div ref={rootRef} className="study-intro" role="dialog" aria-label="学习管家正在启动" aria-modal="true">
+    <div ref={rootRef} className="study-intro" role="dialog" aria-label="浅浅正在启动" aria-modal="true">
       <div className="intro-grid" aria-hidden="true" />
       <div className="intro-noise" aria-hidden="true" />
       <div className="intro-content">
-        <div className="intro-meta"><span>STUDY OS / 01</span><span>LOCAL-FIRST SYSTEM</span></div>
+        <div className="intro-meta"><span>QIANQIAN / 01</span><span>STUDY DESK</span></div>
         <div className="intro-stage">
           <div className="intro-halo" aria-hidden="true" />
           <div className="intro-signal" aria-hidden="true" />
@@ -98,7 +98,7 @@ export function StudyIntro({ onComplete }: StudyIntroProps) {
           <div className="intro-node node-review"><span>03</span><b>复习计划</b><small>REVIEW</small></div>
           <div className="intro-core"><span>学</span><i /></div>
         </div>
-        <div className="intro-wordmark"><span className="intro-kicker">PERSONAL STUDY DESK</span><strong>学习管家</strong></div>
+        <div className="intro-wordmark"><span className="intro-kicker">PERSONAL STUDY DESK</span><strong>浅浅</strong></div>
         <p className="intro-subline">把分散的信息，变成下一步。</p>
         <div className="intro-progress" aria-hidden="true"><span className="intro-progress-fill" /></div>
       </div>
@@ -106,3 +106,4 @@ export function StudyIntro({ onComplete }: StudyIntroProps) {
     </div>
   );
 }
+

@@ -526,3 +526,15 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 
 
 
+
+/* ---------- 右栏「对话」区块：让「新对话」更醒目 ---------- */
+.conversation-rail .section-heading { align-items: center; }
+.conversation-rail .section-heading > span { font-size: 14px; font-weight: 800; letter-spacing: .02em; }
+.conversation-rail .section-heading .rail-new-chat {
+  border: 0; border-radius: 9px; background: var(--coral); color: #fffdf8;
+  font-size: 13px; font-weight: 800; padding: 7px 13px; cursor: pointer;
+  box-shadow: 3px 3px 0 #e6c56a; transition: transform .15s ease;
+}
+.conversation-rail .section-heading .rail-new-chat:hover { transform: translateY(-1px); }
+.conversation-rail .section-heading .rail-new-chat:active { transform: translateY(0); }
+

@@ -106,12 +106,12 @@ const initialMessages: ChatMessage[] = [
   {
     id: "welcome",
     role: "assistant",
-    text: "你好，我是你的学习管家智能体。我可以自己查资料库和任务表后再回答你，也能帮你记 DDL、安排复习——写入前会先给你确认。试试说：“我下周有什么要交的？”",
+    text: "你好，我是浅浅。我可以自己查资料库和任务表后再回答你，也能帮你记 DDL、安排复习——写入前会先给你确认。试试说：“我下周有什么要交的？”",
   },
 ];
 
 const viewLabels: Record<View, string> = {
-  assistant: "智能体",
+  assistant: "浅浅",
   resources: "资料库",
   tasks: "任务中心",
   review: "复习计划",
@@ -378,7 +378,7 @@ export default function Home() {
 
   const startNewConversation = () => {
     if (agentRunningRef.current) {
-      showComposerHint("智能体正在处理，请等这条消息完成后再新建对话。", "error");
+      showComposerHint("浅浅正在处理，请等这条消息完成后再新建对话。", "error");
       return;
     }
     openConversation(null);
@@ -386,7 +386,7 @@ export default function Home() {
 
   const switchConversation = (id: string) => {
     if (agentRunningRef.current) {
-      showComposerHint("智能体正在处理，请稍后再切换对话。", "error");
+      showComposerHint("浅浅正在处理，请稍后再切换对话。", "error");
       return;
     }
     const target = conversations.find((conversation) => conversation.id === id);
@@ -555,7 +555,7 @@ export default function Home() {
       error?: { message?: string };
     };
     if (!response.ok || !data.ok || !data.type) {
-      throw new Error(data.error?.message || "智能体暂时不可用，请稍后重试。");
+      throw new Error(data.error?.message || "服务暂时不可用，请稍后重试。");
     }
     return { type: data.type, content: data.content ?? "", calls: data.calls ?? [] } as AgentStepResponse;
   };
@@ -1010,7 +1010,7 @@ export default function Home() {
 
     if (images.length) {
       attachChatImages(images);
-      showComposerHint(images.length > 1 ? `已附加 ${images.length} 张图片，可以直接问智能体。` : "已附加图片，可以直接问智能体。");
+      showComposerHint(images.length > 1 ? `已附加 ${images.length} 张图片，可以直接问浅浅。` : "已附加图片，可以直接问浅浅。");
     }
     if (documents.length) {
       void handleAttachments(documents);
@@ -1021,7 +1021,7 @@ export default function Home() {
       );
     }
     if (others) {
-      showComposerHint(`有 ${others} 个文件格式不支持：图片可直接发给智能体，PDF / Word / PPT 会入库到资料库。`, "error");
+      showComposerHint(`有 ${others} 个文件格式不支持：图片可直接发给浅浅，PDF / Word / PPT 会入库到资料库。`, "error");
     }
   };
 
@@ -1158,7 +1158,7 @@ export default function Home() {
           : `⏰ 「${reminder.title}」（${reminder.type}）已到截止时间。完成后告诉我，我帮你标记；没完成的话可以帮你顺延。`;
         addAssistantMessage(text);
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
-          new Notification("学习管家提醒", { body: `${reminder.title} · ${reminder.offsetLabel}` });
+          new Notification("浅浅提醒", { body: `${reminder.title} · ${reminder.offsetLabel}` });
         }
       });
     };
@@ -1522,7 +1522,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `学习管家备份-${new Date().toISOString().slice(0, 10)}.json`;
+    link.download = `qianqian-备份-${new Date().toISOString().slice(0, 10)}.json`;
     link.click();
     URL.revokeObjectURL(url);
   };
@@ -1544,7 +1544,7 @@ export default function Home() {
         }
         addAssistantMessage("备份已载入当前浏览器。请检查课程、资料和任务数量是否符合预期。");
       } catch {
-        addAssistantMessage("这个备份文件无法读取。请确认它是学习管家导出的 JSON 备份。");
+        addAssistantMessage("这个备份文件无法读取。请确认它是浅浅导出的 JSON 备份。");
       }
     };
     reader.readAsText(file);
@@ -1611,7 +1611,7 @@ export default function Home() {
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
-    link.download = `学习管家日历-${new Date().toISOString().slice(0, 10)}.ics`;
+    link.download = `qianqian-日历-${new Date().toISOString().slice(0, 10)}.ics`;
     link.click();
     URL.revokeObjectURL(url);
     addAssistantMessage("日历文件已导出，导入系统日历后，DDL 和复习安排会出现在你的日历应用里。");
@@ -1631,7 +1631,7 @@ export default function Home() {
   };
 
   if (!authReady) {
-    return <main className="auth-shell"><div className="auth-card"><div className="auth-brand"><div className="brand-mark">学</div><div><div className="brand-name">学习管家</div><div className="brand-caption">personal study agent</div></div></div><p className="auth-copy">正在准备本地账号…</p></div></main>;
+    return <main className="auth-shell"><div className="auth-card"><div className="auth-brand"><div className="brand-mark">浅</div><div><div className="brand-name">浅浅</div><div className="brand-caption">qianqian</div></div></div><p className="auth-copy">正在准备…</p></div></main>;
   }
 
   if (!currentUser) {
@@ -1643,10 +1643,10 @@ export default function Home() {
     <main className="app-shell" ref={appRef}>
       <aside className="sidebar">
         <div className="brand-lockup">
-          <div className="brand-mark">学</div>
+          <div className="brand-mark">浅</div>
           <div>
-            <div className="brand-name">学习管家</div>
-            <div className="brand-caption">personal study agent</div>
+            <div className="brand-name">浅浅</div>
+            <div className="brand-caption">qianqian</div>
           </div>
         </div>
 
@@ -1686,7 +1686,7 @@ export default function Home() {
 
         <div className="sidebar-footer">
           <span className="local-indicator" />
-          <span>数据保存在本机浏览器</span>
+          <span>浅浅 · qianqian</span>
         </div>
       </aside>
 
@@ -1694,7 +1694,7 @@ export default function Home() {
         <div className="ambient-glow ambient-glow-one" aria-hidden="true" />
         <div className="ambient-glow ambient-glow-two" aria-hidden="true" />
         <header className="topbar">
-          <div className="mobile-brand"><span className="brand-mark small">学</span>学习管家</div>
+          <div className="mobile-brand"><span className="brand-mark small">浅</span>浅浅</div>
           <div className="breadcrumb">{viewLabels[view]} <span>/</span> {view === "assistant" ? "今天" : "全部内容"}</div>
           <label className="global-search">
             <span>⌕</span>
@@ -1844,9 +1844,9 @@ export default function Home() {
       </section>
     </main>
     {view !== "assistant" && pendingTaskConfirm && taskConfirmDraft ? (
-      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="智能体请求写入任务">
+      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="浅浅请求写入任务">
         <div className="action-card confirm-sheet">
-          <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "智能体请求写入 · 修改任务" : "智能体请求写入 · 新任务"}</div>
+          <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "浅浅请求写入 · 修改任务" : "浅浅请求写入 · 新任务"}</div>
           <input
             className="action-title-input"
             value={taskConfirmDraft.title}
@@ -1861,15 +1861,15 @@ export default function Home() {
           </div>
           {confirmError ? <div className="queue-error">{confirmError}</div> : null}
           <div className="action-buttons"><button className="primary-button" onClick={approveTaskConfirm}>确认并保存</button><button className="quiet-button" onClick={rejectConfirm}>取消</button></div>
-          <small className="confirm-hint">智能体正在等你确认，确认前不会写入任何数据。</small>
+          <small className="confirm-hint">浅浅正在等你确认，确认前不会写入任何数据。</small>
         </div>
       </div>
     ) : null}
     {view !== "review" && pendingPlanConfirm ? (
-      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="智能体请求保存复习计划">
+      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="浅浅请求保存复习计划">
         <div className="action-card confirm-sheet">
           <PlanConfirmCard plan={pendingPlanConfirm} error={confirmError} onApprove={approvePlanConfirm} onReject={rejectConfirm} />
-          <small className="confirm-hint">智能体正在等你确认，确认前不会写入任何数据。</small>
+          <small className="confirm-hint">浅浅正在等你确认，确认前不会写入任何数据。</small>
         </div>
       </div>
     ) : null}
@@ -2014,9 +2014,9 @@ function AssistantView({
         <div className="chat-panel">
           <div className="chat-head">
             <span className={`online-dot ${modelConfigured === false ? "offline" : ""}`} />
-            学习管家智能体
-            <span className="head-note">
-              本地优先 · {modelConfigured === null ? "正在检查模型" : modelConfigured ? "DeepSeek Agent 循环在线" : "手动模式可用"}
+            浅浅
+            <span className="head-note" title={modelConfigured === null ? "正在检查" : modelConfigured ? "在线" : "手动模式"}>
+              {modelConfigured === null ? "正在检查" : modelConfigured ? "在线" : "手动模式"}
             </span>
 
           </div>
@@ -2027,7 +2027,7 @@ function AssistantView({
                 className={`message-row ${message.role} gsap-message ${messageIndex === messages.length - 1 ? "gsap-message-latest" : ""}`}
                 key={message.id}
               >
-                <div className="avatar">{message.role === "assistant" ? "学" : "我"}</div>
+                <div className="avatar">{message.role === "assistant" ? "浅" : "我"}</div>
                 <div className="message-stack">
                   {message.images?.length ? (
                     <div className="message-images">
@@ -2058,7 +2058,7 @@ function AssistantView({
 
             {pendingTaskConfirm && taskConfirmDraft ? (
               <div className="action-card gsap-action-card inline-confirm">
-                <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "智能体请求写入 · 修改任务" : "智能体请求写入 · 新任务"}</div>
+                <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "浅浅请求写入 · 修改任务" : "浅浅请求写入 · 新任务"}</div>
                 <input
                   className="action-title-input"
                   value={taskConfirmDraft.title}
@@ -2096,7 +2096,7 @@ function AssistantView({
             </div>
             {extractError ? <div className="extract-error">{extractError}</div> : null}
           </div>
-          {queuedMessage ? <div className="queued-note"><span className="progress-spinner" />已排队，等智能体完成当前任务后会自动发送</div> : null}
+          {queuedMessage ? <div className="queued-note"><span className="progress-spinner" />已排队，等浅浅完成当前任务后会自动发送</div> : null}
           {composerHint ? <div className={`composer-hint ${composerHintKind}`}>{composerHint}</div> : null}
           {chatImages.length ? (
             <div className="chat-image-strip" aria-label="待发送图片">
@@ -2117,7 +2117,7 @@ function AssistantView({
               onPaste={(event) => { if (!busy) onPasteImage(event); }}
               onDrop={(event) => { if (!busy) onDropImage(event); }}
               onDragOver={(event) => event.preventDefault()}
-              placeholder="交给智能体：查 DDL、找资料、安排复习…也可以直接粘贴或拖入截图"
+              placeholder="交给浅浅：查 DDL、找资料、安排复习…也可以直接粘贴或拖入截图"
               aria-label="输入学习管理需求"
               disabled={busy}
             />
@@ -2134,7 +2134,7 @@ function AssistantView({
                 event.currentTarget.value = "";
               }}
             />
-            <button className="attach-button" title="选择图片直接发给智能体看；选择 PDF/Word/PPT 则入库到资料库" onClick={() => composerFileInputRef.current?.click()} disabled={busy}>＋</button>
+            <button className="attach-button" title="选择图片直接发给浅浅看；选择 PDF/Word/PPT 则入库到资料库" onClick={() => composerFileInputRef.current?.click()} disabled={busy}>＋</button>
             <button className="send-button" onClick={onSend} aria-label="发送" disabled={busy}>{busy ? "·" : "↑"}</button>
           </div>
         </div>
@@ -2151,7 +2151,7 @@ function AssistantView({
         <div className="rail-section conversation-rail">
           <div className="section-heading">
             <span>对话</span>
-            <button onClick={onNewConversation} title="开始一个新对话">＋ 新对话</button>
+            <button className="rail-new-chat" onClick={onNewConversation} title="开始一个新对话">＋ 新对话</button>
           </div>
           <button
             className="rail-toggle"
@@ -2186,7 +2186,7 @@ function AssistantView({
         <div className="rail-section"><div className="section-heading"><span>接下来</span><button onClick={() => onNavigate("tasks")}>查看全部 →</button></div>
           {upcomingTasks.slice(0, 3).map((task) => <TaskMini key={task.id} task={task} course={courseMap.get(task.courseId)} />)}
         </div>
-        <div className="tip-card"><span className="tip-kicker">智能体说明</span><p>我会自己调用工具查证后再回答；创建任务和复习计划前，会先弹出确认卡片等你点头。</p><span className="tip-line" /></div>
+        <div className="tip-card"><span className="tip-kicker">浅浅说明</span><p>我会自己调用工具查证后再回答；创建任务和复习计划前，会先弹出确认卡片等你点头。</p><span className="tip-line" /></div>
       </aside>
     </div>
   );
@@ -2195,7 +2195,7 @@ function AssistantView({
 function PlanConfirmCard({ plan, error, onApprove, onReject }: { plan: PlanConfirmState; error: string; onApprove: () => void; onReject: () => void }) {
   return (
     <div className="action-card gsap-action-card">
-      <div className="action-label">智能体请求写入 · 复习计划（{plan.courseName || "未指定课程"}）</div>
+      <div className="action-label">浅浅请求写入 · 复习计划（{plan.courseName || "未指定课程"}）</div>
       <div className="plan-session-list">
         {plan.sessions.map((session) => (
           <div className="plan-item" key={`${session.date}-${session.title}`}>
@@ -2237,7 +2237,7 @@ function ResourcesView({
   const selectedResource = resources.find((resource) => resource.id === selectedId) ?? resources[0] ?? null;
 
   return <div className="page-view"><PageHeader eyebrow="LIBRARY" title="课程资料库" description="让每份资料有位置，也有下一步。" action={<button className="primary-button" onClick={() => setShowForm(!showForm)}>＋ 添加资料</button>} />
-    {showForm ? <div className="inline-form"><div className="form-title">新建资料卡片 <span>若要保存原文件并自动识别，请在智能体首页点击“＋”上传</span></div><div className="form-grid"><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="资料名称" /><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value as Resource["type"])}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select><button className="primary-button" onClick={onCreate}>保存资料</button></div></div> : null}
+    {showForm ? <div className="inline-form"><div className="form-title">新建资料卡片 <span>若要保存原文件并自动识别，请在浅浅页面点击“＋”上传</span></div><div className="form-grid"><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="资料名称" /><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value as Resource["type"])}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select><button className="primary-button" onClick={onCreate}>保存资料</button></div></div> : null}
     <div className="toolbar"><label className="local-search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索标题、课程、标签" /></label><div className="filter-chip">全部课程⌄</div><div className="filter-chip">全部状态⌄</div></div>
     <div className="resource-layout"><div className="resource-list"><div className="list-meta">{resources.length} 份资料 <span>· 本地索引</span></div>{resources.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{resources.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} /></div>
   </div>;
@@ -2271,12 +2271,12 @@ function LocalResourcePreview({ resource, course }: { resource: Resource | null;
   }, [resource?.fileId]);
 
   if (!resource) {
-    return <div className="preview-panel"><div className="preview-top"><span>资料预览</span><span className="preview-tag">LOCAL</span></div><div className="preview-placeholder"><div className="paper-icon">▤</div><strong>选择一份资料</strong><span>原始文件、课程标签和学习状态会显示在这里。</span></div></div>;
+    return <div className="preview-panel"><div className="preview-top"><span>资料预览</span><span className="preview-tag">预览</span></div><div className="preview-placeholder"><div className="paper-icon">▤</div><strong>选择一份资料</strong><span>原始文件、课程标签和学习状态会显示在这里。</span></div></div>;
   }
 
   return (
     <div className="preview-panel live-preview">
-      <div className="preview-top"><span>资料预览</span><span className="preview-tag">本地文件</span></div>
+      <div className="preview-top"><span>资料预览</span><span className="preview-tag">文件</span></div>
       <div className="preview-resource-head">
         <strong>{resource.title}</strong>
         <span>{course?.name ?? "未分类"} · {resource.type} · {resource.fileSize ? formatBytes(resource.fileSize) : "资料卡片"}</span>
@@ -2289,7 +2289,7 @@ function LocalResourcePreview({ resource, course }: { resource: Resource | null;
       {preview?.kind === "word" ? <div className="word-preview">{preview.paragraphs.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>)}</div> : null}
       {preview?.kind === "slides" ? <div className="slides-preview">{preview.slides.map((slide) => <section key={slide.number}><span>SLIDE {String(slide.number).padStart(2, "0")}</span>{slide.lines.length ? slide.lines.map((line, index) => index === 0 ? <h3 key={`${index}-${line}`}>{line}</h3> : <p key={`${index}-${line}`}>{line}</p>) : <p>空白幻灯片</p>}</section>)}</div> : null}
       {preview?.kind === "unsupported" ? <div className="preview-placeholder compact"><div className="paper-icon">!</div><strong>暂时无法渲染</strong><span>{preview.message}</span></div> : null}
-      <div className="preview-note">原始文件留在当前浏览器；只有主动执行 AI 识别时才发送必要内容。</div>
+      <div className="preview-note">原始文件保存在当前浏览器中。</div>
     </div>
   );
 }
@@ -2308,7 +2308,7 @@ function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprov
   const [justSaved, setJustSaved] = useState(false);
   const course = courses.find((item) => item.id === courseId);
 
-  return <div className="page-view"><PageHeader eyebrow="REVIEW STUDIO" title="复习计划" description="智能体先查询你的真实任务和资料，再把计划排成可以完成的节奏。" action={<span className="soft-badge">Agent 生成 · 需确认</span>} />
+  return <div className="page-view"><PageHeader eyebrow="REVIEW STUDIO" title="复习计划" description="浅浅会先查询你的真实任务和资料，再把计划排成可以完成的节奏。" action={<span className="soft-badge">Agent 生成 · 需确认</span>} />
     <div className="review-layout"><div className="review-form-card"><div className="card-kicker">STEP 01 · 先说你的时间</div><h2>为哪门课准备？</h2><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label>考试或复习截止时间<input type="datetime-local" value={examAt} onChange={(event) => setExamAt(event.target.value)} /></label><label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label><div className="availability-chips"><button onClick={() => setAvailability("工作日晚上 19:00–21:00")}>工作日晚上</button><button onClick={() => setAvailability("周末上午 09:00–12:00")}>周末上午</button><button onClick={() => setAvailability("每天 60 分钟")}>每天1小时</button></div><button className="primary-button wide" disabled={running || !courseId} onClick={() => { setJustSaved(false); onGenerate(courseId, examAt, availability); }}>{running ? "智能体规划中…" : "生成计划草案"}</button><small className="form-help">智能体会先查询「{course?.name ?? "课程"}」的未完成任务和已有资料，再制定计划。</small></div><div className="plan-preview-card">{plan ? <><div className="plan-head"><div><div className="card-kicker">STEP 02 · 草案待确认</div><h2>{plan.courseName || course?.name || "课程"} · 复习节奏</h2></div><span className="soft-badge">{availability}</span></div>{plan.sessions.map((session) => <PlanItem key={`${session.date}-${session.title}`} date={formatShortDate(session.date)} title={session.title} duration={`${session.durationMinutes}分钟`} />)}{confirmError ? <div className="queue-error">{confirmError}</div> : null}<div className="plan-actions"><button className="primary-button" onClick={() => { onApprovePlan(); setJustSaved(true); }}>确认保存</button><button className="quiet-button" onClick={onRejectPlan}>放弃草案</button></div></> : justSaved ? <div className="empty-plan"><div className="plan-orbit">✓</div><h2>计划已保存</h2><p>复习安排已写入任务中心，到点会在任务列表中出现。</p></div> : running ? <div className="empty-plan"><span className="progress-spinner" /><h2>智能体正在规划</h2><p>正在查询任务与资料，并把复习安排拆到具体日期。</p></div> : <div className="empty-plan"><div className="plan-orbit">✦</div><h2>计划会出现在这里</h2><p>选择课程并告诉我你有空的时间，智能体会基于真实数据生成一份可确认的草案。</p></div>}</div></div>
   </div>;
 }
@@ -2319,19 +2319,19 @@ function DataView({ snapshot, profile, onSaveProfile, onExport, onExportICal, on
   const [draft, setDraft] = useState<UserProfile>(profile);
   return (
     <div className="page-view">
-      <PageHeader eyebrow="LOCAL SPACE" title="数据管理" description="你的学习空间默认留在当前浏览器里。" action={<span className="local-badge"><span className="local-indicator" />本地存储正常</span>} />
+      <PageHeader eyebrow="DATA" title="数据管理" description="在这里备份、恢复与整理你的学习空间。" />
       <div className="data-grid">
         <div className="data-card primary-data">
-          <div className="card-kicker">LOCAL SNAPSHOT</div>
+          <div className="card-kicker">BACKUP</div>
           <h2>这是你的个人学习空间</h2>
-          <p>课程、资料、任务和对话数据不会自动上传云端。使用备份文件可以在浏览器或设备之间迁移。</p>
+          <p>使用备份文件可以在浏览器或设备之间迁移你的课程、资料、任务与对话。</p>
           <div className="data-stats"><div><strong>{snapshot.courses.length}</strong><span>门课程</span></div><div><strong>{snapshot.resources.length}</strong><span>份资料</span></div><div><strong>{snapshot.tasks.length}</strong><span>条任务</span></div></div>
           <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><button className="quiet-button" onClick={onExportICal}>导出日历 (.ics)</button><button className="quiet-button" onClick={onEnableNotifications}>开启桌面提醒</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
         </div>
         <div className="data-card">
           <div className="card-kicker">AGENT MEMORY</div>
-          <h3>我的画像 · 智能体长期记忆</h3>
-          <p>智能体每一轮思考、制定计划时都会参考这些信息。也可以在对话中直接告诉它，它会自己记住。</p>
+          <h3>我的画像 · 长期记忆</h3>
+          <p>浅浅每一轮思考、制定计划时都会参考这些信息。也可以在对话中直接告诉它，它会自己记住。</p>
           <div className="form-grid profile-form">
             <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="怎么称呼你" />
             <input value={draft.studyTime} onChange={(event) => setDraft({ ...draft, studyTime: event.target.value })} placeholder="方便学习的时间，如：工作日晚上" />
@@ -2341,7 +2341,7 @@ function DataView({ snapshot, profile, onSaveProfile, onExport, onExportICal, on
         </div>
         <div className="data-card">
           <div className="card-kicker">CURRENT STATUS</div>
-          <h3>Sprint 4 完整智能体能力</h3>
+          <h3>当前能力</h3>
           <ul className="check-list">
             <li><span>✓</span>Agent 循环：多步推理 + 工具调用</li>
             <li><span>✓</span>资料正文检索：入库文件内容可读可问</li>
@@ -2451,6 +2451,12 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
+
 
 
 

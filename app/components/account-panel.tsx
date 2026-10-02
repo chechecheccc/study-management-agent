@@ -59,9 +59,9 @@ export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabl
         <div>
           <div className="eyebrow">ADMIN</div>
           <h1>账号管理</h1>
-          <p>每个账号拥有独立的资料库、任务、复习计划、聊天记录与智能体记忆。</p>
+          <p>每个账号拥有独立的资料库、任务、复习计划与对话记录。</p>
         </div>
-        <div className="page-header-action"><span className="local-badge"><span className="local-indicator" />仅本机</span></div>
+        <div className="page-header-action"><span className="local-badge">管理员</span></div>
       </div>
 
       <div className="account-grid">
@@ -126,3 +126,4 @@ export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabl
     </div>
   );
 }
+

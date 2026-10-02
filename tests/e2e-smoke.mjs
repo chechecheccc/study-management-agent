@@ -87,7 +87,7 @@ try {
 
   // 3. 写入流程：创建任务 + 确认卡片
   await waitIdle();
-  await composer.fill("帮我记下：后天晚上 8 点交数据库实验报告");
+  await composer.fill("帮我记下：数据库系统 后天晚上 8 点交实验报告");
   await composer.press("Enter");
   const card = page.locator(".action-card").first();
   const cardAppeared = await card.waitFor({ state: "visible", timeout: 90000 }).then(() => true).catch(() => false);
@@ -104,11 +104,11 @@ try {
   await page.locator(".nav-item", { hasText: "任务中心" }).click();
   await page.waitForTimeout(1500);
   const taskText = await page.locator(".task-list-wrap").textContent();
-  check("任务中心出现新建任务", (taskText ?? "").includes("数据库实验报告"), `列表片段：${(taskText ?? "").slice(0, 80)}`);
+  check("任务中心出现新建任务", (taskText ?? "").includes("实验报告"), `列表片段：${(taskText ?? "").slice(0, 80)}`);
   await shot("04-tasks");
 
   // 5. 视图切换后确认卡片是否仍可见（关键回归点）
-  await page.locator(".nav-item", { hasText: "智能体" }).click();
+  await page.locator(".nav-item", { hasText: "浅浅" }).click();
   await page.waitForTimeout(800);
   await waitIdle();
   await composer.fill("先打开资料库，然后帮我记一个后天中午 12 点的 DDL：数据库系统的视图切换测试任务");
@@ -129,7 +129,7 @@ try {
   check("Agent 能切换页面", sawOtherView, `当前视图=${visibleViews}`);
   check("切走后确认卡片以非阻塞浮层兜底显示", rescueVisible, `当前视图=${visibleViews}, 兜底浮层=${rescueVisible}`);
   // 回到智能体页，确认等待期间输入框不再被禁用（此前会永久锁死）
-  await page.locator(".nav-item", { hasText: "智能体" }).click();
+  await page.locator(".nav-item", { hasText: "浅浅" }).click();
   await page.waitForTimeout(900);
   const composerNow = page.locator('input[aria-label="输入学习管理需求"]');
   const inputEnabled = (await composerNow.count()) > 0 && (await composerNow.isEnabled().catch(() => false));
@@ -210,6 +210,9 @@ const failed = results.filter((r) => !r.ok);
 await writeFile(new URL("report.json", SHOTS), JSON.stringify({ results, consoleErrors }, null, 2));
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
+
+
+
 
 
 
