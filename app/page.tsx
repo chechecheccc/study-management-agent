@@ -2010,8 +2010,6 @@ function AssistantView({
     <div className="assistant-layout">
       <div className="assistant-column">
         <div className="eyebrow">{today.toLocaleDateString("en-US", { weekday: "long", day: "2-digit", month: "long", year: "numeric" }).toUpperCase()}</div>
-        <h1>今天，把学习<br /><em>理清一点。</em></h1>
-        <p className="intro-copy">从一句话开始。我会自己查证你的课程、资料和任务，再行动；写入前一定先问你。</p>
 
         <div className="chat-panel">
           <div className="chat-head">
@@ -2020,31 +2018,9 @@ function AssistantView({
             <span className="head-note">
               本地优先 · {modelConfigured === null ? "正在检查模型" : modelConfigured ? "DeepSeek Agent 循环在线" : "手动模式可用"}
             </span>
-            <div className="chat-head-actions">
-              <button className="text-button" onClick={onNewConversation} title="开始一个新对话">＋ 新对话</button>
-              <button className="text-button" onClick={onToggleConversations} title="按日期查看历史对话" aria-expanded={showConversations ? "true" : "false"}>
-                对话记录{conversations.length ? ` · ${conversations.length}` : ""}
-              </button>
-            </div>
+
           </div>
-          {showConversations ? (
-            <div className="conversation-panel" aria-label="历史对话">
-              {conversationGroups.length ? conversationGroups.map((group) => (
-                <div className="conversation-group" key={group.label}>
-                  <div className="conversation-group-label">{group.label}</div>
-                  {group.items.map((conversation) => (
-                    <div className={`conversation-row ${conversation.id === activeConversationId ? "active" : ""}`} key={conversation.id}>
-                      <button className="conversation-open" onClick={() => onOpenConversation(conversation.id)}>
-                        <strong>{conversation.title}</strong>
-                        <small>{formatConversationStamp(conversation.updatedAt)} · {conversation.messages.length} 条</small>
-                      </button>
-                      <button className="conversation-delete" aria-label={`删除对话 ${conversation.title}`} onClick={() => onDeleteConversation(conversation.id)}>×</button>
-                    </div>
-                  ))}
-                </div>
-              )) : <div className="conversation-empty">还没有历史对话。发出第一条消息后会自动保存。</div>}
-            </div>
-          ) : null}
+
           <div className="message-list" ref={messageListRef} onScroll={handleMessageScroll}>
             {messages.map((message, messageIndex) => (
               <div
@@ -2172,6 +2148,39 @@ function AssistantView({
       </div>
 
       <aside className="dashboard-rail">
+        <div className="rail-section conversation-rail">
+          <div className="section-heading">
+            <span>对话</span>
+            <button onClick={onNewConversation} title="开始一个新对话">＋ 新对话</button>
+          </div>
+          <button
+            className="rail-toggle"
+            onClick={onToggleConversations}
+            aria-expanded={showConversations ? "true" : "false"}
+          >
+            <span>对话记录{conversations.length ? ` · ${conversations.length}` : ""}</span>
+            <span aria-hidden="true">{showConversations ? "▴" : "▾"}</span>
+          </button>
+          {showConversations ? (
+            <div className="conversation-panel" aria-label="历史对话">
+              {conversationGroups.length ? conversationGroups.map((group) => (
+                <div className="conversation-group" key={group.label}>
+                  <div className="conversation-group-label">{group.label}</div>
+                  {group.items.map((conversation) => (
+                    <div className={`conversation-row ${conversation.id === activeConversationId ? "active" : ""}`} key={conversation.id}>
+                      <button className="conversation-open" onClick={() => onOpenConversation(conversation.id)}>
+                        <strong>{conversation.title}</strong>
+                        <small>{formatConversationStamp(conversation.updatedAt)} · {conversation.messages.length} 条</small>
+                      </button>
+                      <button className="conversation-delete" aria-label={`删除对话 ${conversation.title}`} onClick={() => onDeleteConversation(conversation.id)}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )) : <div className="conversation-empty">还没有历史对话。发出第一条消息后会自动保存。</div>}
+            </div>
+          ) : null}
+        </div>
+
         <div className="date-card"><span>{String(today.getDate()).padStart(2, "0")}</span><div><b>{today.getMonth() + 1}月</b><small>{today.getFullYear()} · 第 {weekNumber(today)} 周</small></div></div>
         <div className="stat-grid"><div><strong>{upcomingTasks.length}</strong><span>待完成任务</span></div><div><strong>{pendingCount}</strong><span>待整理资料</span></div><div><strong>{completedCount}</strong><span>本周完成</span></div></div>
         <div className="rail-section"><div className="section-heading"><span>接下来</span><button onClick={() => onNavigate("tasks")}>查看全部 →</button></div>
@@ -2442,6 +2451,8 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
 
 
 
