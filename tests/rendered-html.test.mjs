@@ -81,7 +81,10 @@ test("Sprint 2 stores original files in IndexedDB", async () => {
     read("app/lib/local-store.ts"),
     read("app/lib/file-preview.ts"),
   ]);
-  assert.match(store, /const DB_VERSION = 2/);
+  assert.match(store, /const DB_VERSION = 3/);
+  assert.match(store, /const CONVERSATION_STORE = "conversations"/);
+  assert.match(store, /saveConversation/);
+  assert.match(store, /deleteConversationRecord/);
   assert.match(store, /const FILE_STORE = "files"/);
   assert.match(store, /saveLocalFile/);
   assert.match(store, /100 \* 1024 \* 1024/);
@@ -158,5 +161,6 @@ test("full-screen study intro is wired to the app entry", async () => {
   assert.match(css, /\.intro-grid \{/);
   assert.match(css, /\.intro-core \{/);
 });
+
 
 

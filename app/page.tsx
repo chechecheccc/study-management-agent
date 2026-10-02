@@ -12,15 +12,18 @@ import {
   demoSnapshot,
   emptySnapshot,
   getLocalFile,
+  deleteConversationRecord,
   loadChatLog,
+  loadConversations,
   loadSnapshot,
+  saveConversation,
   makeId,
-  saveChatLog,
   saveLocalFile,
   saveSnapshot,
   setDataScope,
 } from "./lib/local-store";
-import type { ChatLogRecord } from "./lib/local-store";
+import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
+import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
 import type { ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
@@ -140,6 +143,10 @@ export default function Home() {
   const [snapshot, setSnapshot] = useState<AppSnapshot>(emptySnapshot());
   const [ready, setReady] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
+  // 对话会话：按账号保存，可新建 / 切换 / 删除
+  const [conversations, setConversations] = useState<ConversationRecord[]>([]);
+  const [activeConversationId, setActiveConversationId] = useState<string | null>(null);
+  const [showConversationList, setShowConversationList] = useState(false);
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
   const [modelConfigured, setModelConfigured] = useState<boolean | null>(null);
@@ -236,15 +243,25 @@ export default function Home() {
       { y: 0, autoAlpha: 1, duration: 0.42, ease: "power2.out" },
     );
     gsap.fromTo(
-      ".view-surface .gsap-message, .view-surface .gsap-action-card, .view-surface .queue-item",
+      ".view-surface .gsap-action-card, .view-surface .queue-item",
       { y: 12, autoAlpha: 0 },
       { y: 0, autoAlpha: 1, duration: 0.32, stagger: 0.045, ease: "power2.out", delay: 0.08 },
     );
   }, {
     scope: appRef,
-    dependencies: [view, messages.length, Boolean(pendingTaskConfirm), Boolean(pendingPlanConfirm), importQueue.length],
+    dependencies: [view, Boolean(pendingTaskConfirm), Boolean(pendingPlanConfirm), importQueue.length],
     revertOnUpdate: true,
   });
+
+  // 只让"最新一条消息"播入场动画：历史消息不再重复播放，避免每次发送都满屏闪动
+  useGSAP(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    gsap.fromTo(
+      ".view-surface .gsap-message-latest",
+      { y: 10, autoAlpha: 0 },
+      { y: 0, autoAlpha: 1, duration: 0.26, ease: "power2.out", overwrite: "auto" },
+    );
+  }, { scope: appRef, dependencies: [messages.length] });
 
   useGSAP(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
@@ -286,15 +303,41 @@ export default function Home() {
     setChatImages([]);
     setProfile(loadProfile());
 
-    const [stored, chat] = await Promise.all([loadSnapshot(), loadChatLog()]);
+    const [stored, savedConversations, legacyChat] = await Promise.all([
+      loadSnapshot(),
+      loadConversations(),
+      loadChatLog(),
+    ]);
     const next = stored.courses.length ? stored : demoSnapshot();
     setSnapshot(next);
     if (!stored.courses.length) void saveSnapshot(next);
-    setMessages(
-      chat.length
-        ? chat.map((record) => ({ id: record.id, role: record.role, text: record.text, steps: record.steps, images: record.images }))
-        : initialMessages,
-    );
+
+    // 兼容旧数据：此前只有一条全局聊天记录，首次升级时迁移成一个会话
+    let conversationList = savedConversations;
+    if (!conversationList.length && legacyChat.length) {
+      const nowIso = new Date().toISOString();
+      const migrated: ConversationRecord = {
+        id: makeId("conversation"),
+        title: deriveConversationTitle(legacyChat.find((record) => record.role === "user")?.text ?? "之前的对话"),
+        createdAt: legacyChat[0]?.createdAt ?? nowIso,
+        updatedAt: legacyChat[legacyChat.length - 1]?.createdAt ?? nowIso,
+        messages: legacyChat,
+      };
+      conversationList = [migrated];
+      void saveConversation(migrated);
+    }
+    setConversations(conversationList);
+    const latest = conversationList[0] ?? null;
+    setActiveConversationId(latest?.id ?? null);
+    if (latest) {
+      setMessages(latest.messages.length ? toChatMessages(latest.messages) : initialMessages);
+      agentHistoryRef.current = toHistory(latest.messages);
+      chatTimestampsRef.current = new Map(latest.messages.map((record) => [record.id, record.createdAt]));
+    } else {
+      setMessages(initialMessages);
+      agentHistoryRef.current = [];
+      chatTimestampsRef.current = new Map();
+    }
     setImportQueue([]);
     setPendingTaskConfirm(null);
     setTaskConfirmDraft(null);
@@ -303,6 +346,58 @@ export default function Home() {
     setTaskCourse(next.courses[0]?.id ?? "");
     setView("assistant");
     setReady(true);
+  };
+
+  // 会话记录 ↔ 界面消息
+  const toChatMessages = (records: ChatLogRecord[]): ChatMessage[] =>
+    records.map((record) => ({ id: record.id, role: record.role, text: record.text, steps: record.steps, images: record.images }));
+
+  const toHistory = (records: ChatLogRecord[]): HistoryMessage[] =>
+    records
+      .filter((record) => record.text.trim())
+      .slice(-12)
+      .map((record) => ({ role: record.role, content: record.text, images: record.images }));
+
+  // 打开指定会话；传 null 表示开始一个新对话
+  const openConversation = (conversation: ConversationRecord | null) => {
+    setActiveConversationId(conversation?.id ?? null);
+    if (conversation) {
+      const nextMessages = conversation.messages.length ? toChatMessages(conversation.messages) : initialMessages;
+      setMessages(nextMessages);
+      agentHistoryRef.current = toHistory(conversation.messages);
+      chatTimestampsRef.current = new Map(conversation.messages.map((record) => [record.id, record.createdAt]));
+    } else {
+      setMessages(initialMessages);
+      agentHistoryRef.current = [];
+      chatTimestampsRef.current = new Map();
+    }
+    setShowConversationList(false);
+    syncChatImages([]);
+    setComposerHint("");
+  };
+
+  const startNewConversation = () => {
+    if (agentRunningRef.current) {
+      showComposerHint("智能体正在处理，请等这条消息完成后再新建对话。", "error");
+      return;
+    }
+    openConversation(null);
+  };
+
+  const switchConversation = (id: string) => {
+    if (agentRunningRef.current) {
+      showComposerHint("智能体正在处理，请稍后再切换对话。", "error");
+      return;
+    }
+    const target = conversations.find((conversation) => conversation.id === id);
+    if (target) openConversation(target);
+  };
+
+  const removeConversation = (id: string) => {
+    const next = conversations.filter((conversation) => conversation.id !== id);
+    setConversations(next);
+    void deleteConversationRecord(id);
+    if (id === activeConversationId) openConversation(next[0] ?? null);
   };
 
   const login = async (username: string, password: string): Promise<string | null> => {
@@ -350,8 +445,7 @@ export default function Home() {
     if (ready && currentUser) saveSnapshot(snapshot);
   }, [ready, snapshot, currentUser]);
 
-  // 聊天记录保存到当前账号（欢迎语不落库）。
-  // 时间戳只在首次写入时生成，之后沿用，避免每次保存重排消息顺序。
+  // 按会话保存：新对话在产生第一条消息时自动建档，标题取首条用户消息。
   useEffect(() => {
     if (!ready || !currentUser) return;
     const records: ChatLogRecord[] = messages
@@ -367,8 +461,34 @@ export default function Home() {
     records.forEach((record) => {
       if (!chatTimestampsRef.current.has(record.id)) chatTimestampsRef.current.set(record.id, record.createdAt);
     });
-    void saveChatLog(records);
-  }, [messages, ready, currentUser]);
+    // 只有欢迎语不入库；且必须存在用户消息才建档——
+    // 否则主动性巡检的助手消息会先建出一个"新对话"，标题就取不到用户内容了。
+    const userRecords = records.filter((record) => record.role === "user");
+    if (!userRecords.length) return;
+
+    const nowIso = new Date().toISOString();
+    const existing = conversations.find((conversation) => conversation.id === activeConversationId);
+    const firstUserText = userRecords[0].text;
+    // 已存在的会话若还是占位标题，补正为真实标题
+    const title = existing && existing.title !== "新对话"
+      ? existing.title
+      : deriveConversationTitle(firstUserText);
+    const record: ConversationRecord = {
+      id: existing?.id ?? activeConversationId ?? makeId("conversation"),
+      title,
+      createdAt: existing?.createdAt ?? nowIso,
+      updatedAt: nowIso,
+      messages: records,
+    };
+    if (!existing) {
+      setActiveConversationId(record.id);
+      setConversations((current) => (current.some((item) => item.id === record.id) ? current : [record, ...current]));
+    } else {
+      setConversations((current) => current.map((item) => (item.id === record.id ? record : item)));
+    }
+    void saveConversation(record);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [messages, ready, currentUser, activeConversationId]);
 
   const courseMap = useMemo(
     () => new Map(snapshot.courses.map((course) => [course.id, course])),
@@ -1599,6 +1719,14 @@ export default function Home() {
               agentRunning={agentRunning}
               agentBackground={agentBackground}
               queuedMessage={queuedMessage}
+              conversations={conversations}
+              conversationGroups={groupConversationsByDate(conversations)}
+              activeConversationId={activeConversationId}
+              showConversations={showConversationList}
+              onToggleConversations={() => setShowConversationList((current) => !current)}
+              onNewConversation={startNewConversation}
+              onOpenConversation={switchConversation}
+              onDeleteConversation={removeConversation}
               chatImages={chatImages}
               composerFileInputRef={composerFileInputRef}
               composerHint={composerHint}
@@ -1758,6 +1886,14 @@ function AssistantView({
   agentRunning,
   agentBackground,
   queuedMessage,
+  conversations,
+  conversationGroups,
+  activeConversationId,
+  showConversations,
+  onToggleConversations,
+  onNewConversation,
+  onOpenConversation,
+  onDeleteConversation,
   chatImages,
   composerFileInputRef,
   composerHint,
@@ -1802,6 +1938,14 @@ function AssistantView({
   agentRunning: boolean;
   agentBackground: boolean;
   queuedMessage: string | null;
+  conversations: ConversationRecord[];
+  conversationGroups: Array<{ label: string; items: ConversationRecord[] }>;
+  activeConversationId: string | null;
+  showConversations: boolean;
+  onToggleConversations: () => void;
+  onNewConversation: () => void;
+  onOpenConversation: (id: string) => void;
+  onDeleteConversation: (id: string) => void;
   chatImages: string[];
   composerFileInputRef: React.RefObject<HTMLInputElement | null>;
   composerHint: string;
@@ -1840,6 +1984,26 @@ function AssistantView({
   onNavigate: (view: View) => void;
 }) {
   const today = new Date();
+  // 消息列表自动贴底：发送后始终显示最新内容，而不是停在顶部第一条
+  const messageListRef = useRef<HTMLDivElement>(null);
+  const stickToBottomRef = useRef(true);
+
+  const handleMessageScroll = () => {
+    const el = messageListRef.current;
+    if (!el) return;
+    // 距底部 80px 内视为"正在跟读最新消息"
+    stickToBottomRef.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+  };
+
+  useEffect(() => {
+    const el = messageListRef.current;
+    if (!el) return;
+    const last = messages[messages.length - 1];
+    // 用户自己发的消息一定跟到底部；其余更新只在原本就贴底时才跟随
+    if (last?.role === "user") stickToBottomRef.current = true;
+    if (!stickToBottomRef.current) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
   // 等待用户确认时不锁定输入：用户仍可浏览、打字，确认卡片在智能体页或兜底浮层里可见
   const busy = (agentRunning && !agentBackground && !pendingTaskConfirm && !pendingPlanConfirm) || batchRunning;
   return (
@@ -1856,10 +2020,37 @@ function AssistantView({
             <span className="head-note">
               本地优先 · {modelConfigured === null ? "正在检查模型" : modelConfigured ? "DeepSeek Agent 循环在线" : "手动模式可用"}
             </span>
+            <div className="chat-head-actions">
+              <button className="text-button" onClick={onNewConversation} title="开始一个新对话">＋ 新对话</button>
+              <button className="text-button" onClick={onToggleConversations} title="按日期查看历史对话" aria-expanded={showConversations ? "true" : "false"}>
+                对话记录{conversations.length ? ` · ${conversations.length}` : ""}
+              </button>
+            </div>
           </div>
-          <div className="message-list">
-            {messages.map((message) => (
-              <div className={`message-row ${message.role} gsap-message`} key={message.id}>
+          {showConversations ? (
+            <div className="conversation-panel" aria-label="历史对话">
+              {conversationGroups.length ? conversationGroups.map((group) => (
+                <div className="conversation-group" key={group.label}>
+                  <div className="conversation-group-label">{group.label}</div>
+                  {group.items.map((conversation) => (
+                    <div className={`conversation-row ${conversation.id === activeConversationId ? "active" : ""}`} key={conversation.id}>
+                      <button className="conversation-open" onClick={() => onOpenConversation(conversation.id)}>
+                        <strong>{conversation.title}</strong>
+                        <small>{formatConversationStamp(conversation.updatedAt)} · {conversation.messages.length} 条</small>
+                      </button>
+                      <button className="conversation-delete" aria-label={`删除对话 ${conversation.title}`} onClick={() => onDeleteConversation(conversation.id)}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )) : <div className="conversation-empty">还没有历史对话。发出第一条消息后会自动保存。</div>}
+            </div>
+          ) : null}
+          <div className="message-list" ref={messageListRef} onScroll={handleMessageScroll}>
+            {messages.map((message, messageIndex) => (
+              <div
+                className={`message-row ${message.role} gsap-message ${messageIndex === messages.length - 1 ? "gsap-message-latest" : ""}`}
+                key={message.id}
+              >
                 <div className="avatar">{message.role === "assistant" ? "学" : "我"}</div>
                 <div className="message-stack">
                   {message.images?.length ? (
@@ -2251,6 +2442,13 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
+
+
 
 
 

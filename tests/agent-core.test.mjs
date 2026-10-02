@@ -430,3 +430,53 @@ test("循环：历史消息里的图片也会保留（支持对同一张图追�
 });
 
 
+
+// ---------- 对话会话测试 ----------
+
+import { deriveConversationTitle, groupConversationsByDate, formatConversationStamp } from "../app/agent/conversations.ts";
+
+test("会话标题：取自首条用户消息并截断", () => {
+  assert.equal(deriveConversationTitle("帮我看看任务"), "帮我看看任务");
+  assert.equal(deriveConversationTitle("  换行\n和   多余空格  "), "换行 和 多余空格");
+  assert.equal(deriveConversationTitle(""), "新对话");
+  const long = deriveConversationTitle("这是一条特别长的消息用来验证标题截断逻辑是否正确处理");
+  assert.ok(long.length <= 19);
+  assert.ok(long.endsWith("…"));
+});
+
+test("会话按日期分组：今天 / 昨天 / 最近 7 天 / 更早", () => {
+  const now = new Date("2026-10-02T15:00:00+08:00");
+  const make = (id, daysAgo, hour = 10) => {
+    const d = new Date(now.getTime() - daysAgo * 86_400_000);
+    d.setHours(hour, 0, 0, 0);
+    return { id, title: id, createdAt: d.toISOString(), updatedAt: d.toISOString() };
+  };
+  const groups = groupConversationsByDate([
+    make("今天A", 0, 9),
+    make("今天B", 0, 14),
+    make("昨天", 1),
+    make("三天前", 3),
+    make("一个月前", 30),
+  ], now);
+
+  assert.deepEqual(groups.map((g) => g.label), ["今天", "昨天", "最近 7 天", "更早"]);
+  assert.deepEqual(groups[0].items.map((i) => i.id), ["今天B", "今天A"]); // 组内按更新时间倒序
+  assert.equal(groups[1].items[0].id, "昨天");
+  assert.equal(groups[2].items[0].id, "三天前");
+  assert.equal(groups[3].items[0].id, "一个月前");
+  // 空分组不返回
+  const single = groupConversationsByDate([make("只有今天", 0)], now);
+  assert.equal(single.length, 1);
+  assert.equal(single[0].label, "今天");
+});
+
+test("会话时间标注：今天显示时分，昨天显示昨天，更早显示日期", () => {
+  const now = new Date("2026-10-02T15:00:00+08:00");
+  const today = new Date("2026-10-02T09:05:00+08:00").toISOString();
+  const yesterday = new Date("2026-10-01T09:05:00+08:00").toISOString();
+  const older = new Date("2026-09-20T09:05:00+08:00").toISOString();
+  assert.equal(formatConversationStamp(today, now), "09:05");
+  assert.equal(formatConversationStamp(yesterday, now), "昨天");
+  assert.equal(formatConversationStamp(older, now), "9/20");
+  assert.equal(formatConversationStamp("不是日期", now), "");
+});

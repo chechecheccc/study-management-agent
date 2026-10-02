@@ -49,12 +49,13 @@ export type AppSnapshot = {
   tasks: Task[];
 };
 
-const DB_VERSION = 2;
+const DB_VERSION = 3;
 const DATA_STORES = ["courses", "resources", "tasks"] as const;
 const FILE_STORE = "files";
 const ALL_STORES = [...DATA_STORES, FILE_STORE] as const;
 const CHAT_STORE = "chat";
-const ALL_STORES_WITH_CHAT = [...ALL_STORES, CHAT_STORE] as const;
+const CONVERSATION_STORE = "conversations";
+const ALL_STORES_WITH_CHAT = [...ALL_STORES, CHAT_STORE, CONVERSATION_STORE] as const;
 
 // 账号隔离：每个账号使用独立的 IndexedDB 与 localStorage 命名空间。
 // 未登录（scope 为空）时回落到默认命名空间，保证旧数据仍可访问。
@@ -213,6 +214,64 @@ export type ChatLogRecord = {
   createdAt: string;
 };
 
+export type ConversationRecord = {
+  id: string;
+  title: string;
+  createdAt: string;
+  updatedAt: string;
+  messages: ChatLogRecord[];
+};
+
+export async function loadConversations(): Promise<ConversationRecord[]> {
+  if (typeof window === "undefined" || typeof indexedDB === "undefined") return [];
+  try {
+    const db = await openDb();
+    const records = await new Promise<ConversationRecord[]>((resolve, reject) => {
+      const transaction = db.transaction(CONVERSATION_STORE, "readonly");
+      const request = transaction.objectStore(CONVERSATION_STORE).getAll();
+      request.onsuccess = () => resolve((request.result ?? []) as ConversationRecord[]);
+      request.onerror = () => reject(request.error);
+    });
+    db.close();
+    return records.sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  } catch {
+    return [];
+  }
+}
+
+export async function saveConversation(record: ConversationRecord) {
+  if (typeof window === "undefined" || typeof indexedDB === "undefined") return;
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(CONVERSATION_STORE, "readwrite");
+      transaction.objectStore(CONVERSATION_STORE).put(record);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+      transaction.onabort = () => reject(transaction.error);
+    });
+    db.close();
+  } catch {
+    // 写入失败不影响对话
+  }
+}
+
+export async function deleteConversationRecord(id: string) {
+  if (typeof window === "undefined" || typeof indexedDB === "undefined") return;
+  try {
+    const db = await openDb();
+    await new Promise<void>((resolve, reject) => {
+      const transaction = db.transaction(CONVERSATION_STORE, "readwrite");
+      transaction.objectStore(CONVERSATION_STORE).delete(id);
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error);
+    });
+    db.close();
+  } catch {
+    // 删除失败时界面仍会移除该条目
+  }
+}
+
 export async function loadChatLog(): Promise<ChatLogRecord[]> {
   if (typeof window === "undefined" || typeof indexedDB === "undefined") return [];
   try {
@@ -340,6 +399,7 @@ export function demoSnapshot(): AppSnapshot {
 export function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
 
 
 
