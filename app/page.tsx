@@ -153,8 +153,9 @@ export default function Home() {
   const [chatImages, setChatImages] = useState<string[]>([]);
   const chatImagesRef = useRef<string[]>([]);
   const queuedImagesRef = useRef<string[]>([]);
-  const chatImageInputRef = useRef<HTMLInputElement>(null);
+  const composerFileInputRef = useRef<HTMLInputElement>(null);
   const [composerHint, setComposerHint] = useState("");
+  const [composerHintKind, setComposerHintKind] = useState<"info" | "error">("info");
   // 聊天消息首次出现的时间（保证刷新后顺序稳定）
   const chatTimestampsRef = useRef(new Map<string, string>());
   const [extractError, setExtractError] = useState("");
@@ -177,7 +178,7 @@ export default function Home() {
   const [pendingPlanConfirm, setPendingPlanConfirm] = useState<PlanConfirmState | null>(null);
   const [confirmError, setConfirmError] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
-  const attachmentInputRef = useRef<HTMLInputElement>(null);
+
   const batchRunningRef = useRef(false);
   const agentRunningRef = useRef(false);
   const agentHistoryRef = useRef<HistoryMessage[]>(loadAgentHistory());
@@ -861,6 +862,11 @@ export default function Home() {
   };
 
 
+  const showComposerHint = (message: string, kind: "info" | "error" = "info") => {
+    setComposerHint(message);
+    setComposerHintKind(kind);
+  };
+
   const syncChatImages = (next: string[]) => {
     chatImagesRef.current = next;
     setChatImages(next);
@@ -871,9 +877,40 @@ export default function Home() {
     if (!images.length) return;
     void Promise.all(images.slice(0, 4).map((file) => readAsDataUrl(file))).then((urls) => {
       syncChatImages([...chatImagesRef.current, ...urls].slice(0, 4));
-      setComposerHint("");
     });
   };
+
+  // 统一的文件入口：图片直接进对话给智能体看；PDF/Word/PPT 走资料库入库流水线。
+  // 两种意图分开处理，并在界面上明确告知，避免"我选了文件但智能体看不到"。
+  const handleComposerFiles = (files: File[]) => {
+    if (!files.length) return;
+    const images = files.filter((file) => file.type.startsWith("image/"));
+    const documents = files.filter((file) => /\.(pdf|docx?|pptx?)$/i.test(file.name));
+    const others = files.length - images.length - documents.length;
+
+    if (images.length) {
+      attachChatImages(images);
+      showComposerHint(images.length > 1 ? `已附加 ${images.length} 张图片，可以直接问智能体。` : "已附加图片，可以直接问智能体。");
+    }
+    if (documents.length) {
+      void handleAttachments(documents);
+      showComposerHint(
+        documents.length > 1
+          ? `已把 ${documents.length} 个文件加入资料库入库队列（识别完成后需要你确认）。`
+          : "已把文件加入资料库入库队列（识别完成后需要你确认）。",
+      );
+    }
+    if (others) {
+      showComposerHint(`有 ${others} 个文件格式不支持：图片可直接发给智能体，PDF / Word / PPT 会入库到资料库。`, "error");
+    }
+  };
+
+  // 提示条数秒后自动消失，避免长期占位
+  useEffect(() => {
+    if (!composerHint) return;
+    const timer = window.setTimeout(() => setComposerHint(""), 6000);
+    return () => window.clearTimeout(timer);
+  }, [composerHint]);
 
   // 拖拽图片文件到输入区也能附加
   const handleComposerDrop = (event: React.DragEvent<HTMLElement>) => {
@@ -914,15 +951,16 @@ export default function Home() {
     if (!images.length) {
       // 剪贴板里只有文字/链接（例如复制的是图片网址），明确告诉用户怎么才能发进来
       const hasText = Boolean(clipboard.getData("text/plain").trim());
-      setComposerHint(
+      showComposerHint(
         hasText
           ? "粘贴的内容里没有图片数据（可能只是图片链接或文字）。请用截图工具复制图片本身，或点右侧 ▣ 选择图片文件。"
-          : "没有检测到图片，请用截图工具复制图片，或点右侧 ▣ 选择图片文件。",
+          : "没有检测到图片，请用截图工具复制图片，或点右侧 ＋ 选择图片文件。",
+        "error",
       );
       return;
     }
     event.preventDefault();
-    setComposerHint("");
+    showComposerHint("");
     attachChatImages(images);
   };
 
@@ -1562,9 +1600,10 @@ export default function Home() {
               agentBackground={agentBackground}
               queuedMessage={queuedMessage}
               chatImages={chatImages}
-              chatImageInputRef={chatImageInputRef}
+              composerFileInputRef={composerFileInputRef}
               composerHint={composerHint}
-              onAttachImages={attachChatImages}
+              composerHintKind={composerHintKind}
+              onPickFiles={handleComposerFiles}
               onRemoveImage={removeChatImage}
               onPasteImage={handleComposerPaste}
               onDropImage={handleComposerDrop}
@@ -1581,8 +1620,7 @@ export default function Home() {
               modelConfigured={modelConfigured}
               importQueue={importQueue}
               batchRunning={batchRunning}
-              attachmentInputRef={attachmentInputRef}
-              onAttachments={handleAttachments}
+
               onImportResourceChange={updateImportResource}
               onImportTaskChange={updateImportTask}
               onToggleImportTask={toggleImportTask}
@@ -1721,9 +1759,10 @@ function AssistantView({
   agentBackground,
   queuedMessage,
   chatImages,
-  chatImageInputRef,
+  composerFileInputRef,
   composerHint,
-  onAttachImages,
+  composerHintKind,
+  onPickFiles,
   onRemoveImage,
   onPasteImage,
   onDropImage,
@@ -1740,8 +1779,7 @@ function AssistantView({
   modelConfigured,
   importQueue,
   batchRunning,
-  attachmentInputRef,
-  onAttachments,
+
   onImportResourceChange,
   onImportTaskChange,
   onToggleImportTask,
@@ -1765,9 +1803,10 @@ function AssistantView({
   agentBackground: boolean;
   queuedMessage: string | null;
   chatImages: string[];
-  chatImageInputRef: React.RefObject<HTMLInputElement | null>;
+  composerFileInputRef: React.RefObject<HTMLInputElement | null>;
   composerHint: string;
-  onAttachImages: (files: File[]) => void;
+  composerHintKind: "info" | "error";
+  onPickFiles: (files: File[]) => void;
   onRemoveImage: (index: number) => void;
   onPasteImage: (event: React.ClipboardEvent<HTMLInputElement>) => void;
   onDropImage: (event: React.DragEvent<HTMLElement>) => void;
@@ -1784,8 +1823,7 @@ function AssistantView({
   modelConfigured: boolean | null;
   importQueue: ImportQueueItem[];
   batchRunning: boolean;
-  attachmentInputRef: React.RefObject<HTMLInputElement | null>;
-  onAttachments: (files: File[]) => void | Promise<void>;
+
   onImportResourceChange: (id: string, patch: Partial<PendingResourceDraft>) => void;
   onImportTaskChange: (id: string, patch: Partial<Task>) => void;
   onToggleImportTask: (id: string, include: boolean) => void;
@@ -1892,7 +1930,7 @@ function AssistantView({
             {extractError ? <div className="extract-error">{extractError}</div> : null}
           </div>
           {queuedMessage ? <div className="queued-note"><span className="progress-spinner" />已排队，等智能体完成当前任务后会自动发送</div> : null}
-          {composerHint ? <div className="composer-hint">{composerHint}</div> : null}
+          {composerHint ? <div className={`composer-hint ${composerHintKind}`}>{composerHint}</div> : null}
           {chatImages.length ? (
             <div className="chat-image-strip" aria-label="待发送图片">
               {chatImages.map((image, index) => (
@@ -1917,31 +1955,19 @@ function AssistantView({
               disabled={busy}
             />
             <input
-              ref={chatImageInputRef}
+              ref={composerFileInputRef}
+              data-testid="composer-file-input"
               type="file"
-              accept="image/*"
+              accept="image/*,.pdf,.doc,.docx,.ppt,.pptx"
               multiple
               hidden
               onChange={(event) => {
                 const files = Array.from(event.target.files ?? []);
-                onAttachImages(files);
+                onPickFiles(files);
                 event.currentTarget.value = "";
               }}
             />
-            <button className="attach-button" title="发送图片给智能体看（也可直接粘贴截图）" onClick={() => chatImageInputRef.current?.click()} disabled={busy}>▣</button>
-            <input
-              ref={attachmentInputRef}
-              type="file"
-              accept=".pdf,.doc,.docx,.ppt,.pptx,.png,.jpg,.jpeg,.webp,image/*"
-              multiple
-              hidden
-              onChange={(event) => {
-                const files = Array.from(event.target.files ?? []);
-                onAttachments(files);
-                event.currentTarget.value = "";
-              }}
-            />
-            <button className="attach-button" title="批量上传截图或课程文件" onClick={() => attachmentInputRef.current?.click()} disabled={busy}>＋</button>
+            <button className="attach-button" title="选择图片直接发给智能体看；选择 PDF/Word/PPT 则入库到资料库" onClick={() => composerFileInputRef.current?.click()} disabled={busy}>＋</button>
             <button className="send-button" onClick={onSend} aria-label="发送" disabled={busy}>{busy ? "·" : "↑"}</button>
           </div>
         </div>
@@ -2225,6 +2251,12 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
+
 
 
 

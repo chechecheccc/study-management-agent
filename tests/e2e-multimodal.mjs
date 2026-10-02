@@ -32,7 +32,7 @@ try {
   for (let i = 0; i < 40; i += 1) { if (await composer.isEnabled().catch(() => false)) break; await page.waitForTimeout(1000); }
 
   // 1) 选择图片
-  await page.locator('input[type="file"][accept="image/*"]').setInputFiles(IMAGE);
+  await page.locator('[data-testid="composer-file-input"]').setInputFiles(IMAGE);
   await page.waitForTimeout(1200);
   const tileCount = await page.locator(".chat-image-tile").count();
   check("聊天输入框可附加图片", tileCount === 1, `缩略图数量=${tileCount}`);
@@ -73,4 +73,5 @@ try {
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
+
 
