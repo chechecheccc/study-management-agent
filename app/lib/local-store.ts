@@ -4,6 +4,8 @@ export type Course = {
   semester: string;
   color: string;
   archived?: boolean;
+  /** 最后修改时间（云同步合并依据，由本地自动打标） */
+  updatedAt?: string;
 };
 
 export type Resource = {
@@ -20,6 +22,7 @@ export type Resource = {
   mimeType?: string;
   /** 入库时提取的正文文本（PDF 文字层 / DOCX / PPTX / 图片识别摘要），供 Agent 检索与阅读 */
   contentText?: string;
+  updatedAt?: string;
 };
 
 export type LocalFileRecord = {
@@ -41,6 +44,7 @@ export type Task = {
   status: "未开始" | "进行中" | "已完成" | "已逾期";
   priority: "高" | "中" | "低";
   reminder: string;
+  updatedAt?: string;
 };
 
 export type AppSnapshot = {
@@ -399,6 +403,7 @@ export function demoSnapshot(): AppSnapshot {
 export function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
 
 
 

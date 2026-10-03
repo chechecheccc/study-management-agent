@@ -9,6 +9,8 @@ const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const SHOTS = new URL("../.e2e-auth/", import.meta.url);
 await mkdir(SHOTS, { recursive: true });
 
+const RUN_ID = Date.now().toString(36).slice(-5);
+const NEW_USER = "stu" + RUN_ID;
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok });
@@ -72,22 +74,24 @@ try {
 
   // 4. 管理员面板
   await page.locator(".nav-item", { hasText: "账号管理" }).click();
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(600);
+  // 账号从服务端异步加载，先等列表出现
+  await page.locator(".account-row").first().waitFor({ state: "visible", timeout: 20000 }).catch(() => {});
   const listed = await page.locator(".account-row").count();
-  check("面板列出全部账号", listed === 3, `实际 ${listed} 个`);
+  check("面板列出服务端账号", listed >= 3, `实际 ${listed} 个`);
   await shot(page, "03-accounts-panel");
 
   // 5. 新增账号
-  await page.locator('input[aria-label="新账号用户名"]').fill("student3");
+  await page.locator('input[aria-label="新账号用户名"]').fill(NEW_USER);
   await page.locator('input[aria-label="新账号显示名称"]').fill("小陈");
   await page.locator('input[aria-label="新账号密码"]').fill("abc123456");
   await page.getByRole("button", { name: /创建账号/ }).click();
   await page.waitForTimeout(1500);
   const afterCreate = await page.locator(".account-row").count();
-  check("新增账号成功", afterCreate === 4, `实际 ${afterCreate} 个`);
+  check("新增账号成功", afterCreate === listed + 1, `新增前 ${listed} → 新增后 ${afterCreate}`);
 
   // 6. 重复用户名被拒
-  await page.locator('input[aria-label="新账号用户名"]').fill("student3");
+  await page.locator('input[aria-label="新账号用户名"]').fill(NEW_USER);
   await page.locator('input[aria-label="新账号密码"]').fill("abc123456");
   await page.getByRole("button", { name: /创建账号/ }).click();
   await page.waitForTimeout(1200);

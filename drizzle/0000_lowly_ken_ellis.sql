@@ -1,32 +1,35 @@
 CREATE TABLE "conversations" (
-	"id" text PRIMARY KEY NOT NULL,
+	"id" text NOT NULL,
 	"user_id" text NOT NULL,
 	"title" text DEFAULT '新对话' NOT NULL,
 	"created_at" text NOT NULL,
 	"updated_at" text NOT NULL,
-	"deleted_at" text
+	"deleted_at" text,
+	CONSTRAINT "conversations_user_id_id_pk" PRIMARY KEY("user_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "courses" (
-	"id" text PRIMARY KEY NOT NULL,
+	"id" text NOT NULL,
 	"user_id" text NOT NULL,
 	"name" text NOT NULL,
 	"semester" text DEFAULT '' NOT NULL,
 	"color" text DEFAULT 'coral' NOT NULL,
 	"archived" boolean DEFAULT false NOT NULL,
 	"updated_at" text NOT NULL,
-	"deleted_at" text
+	"deleted_at" text,
+	CONSTRAINT "courses_user_id_id_pk" PRIMARY KEY("user_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "messages" (
-	"id" text PRIMARY KEY NOT NULL,
+	"id" text NOT NULL,
 	"conversation_id" text NOT NULL,
 	"user_id" text NOT NULL,
 	"role" text NOT NULL,
 	"text" text DEFAULT '' NOT NULL,
 	"steps" jsonb,
 	"images" jsonb,
-	"created_at" text NOT NULL
+	"created_at" text NOT NULL,
+	CONSTRAINT "messages_user_id_id_pk" PRIMARY KEY("user_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "profiles" (
@@ -39,7 +42,7 @@ CREATE TABLE "profiles" (
 );
 --> statement-breakpoint
 CREATE TABLE "resources" (
-	"id" text PRIMARY KEY NOT NULL,
+	"id" text NOT NULL,
 	"user_id" text NOT NULL,
 	"course_id" text DEFAULT '' NOT NULL,
 	"title" text NOT NULL,
@@ -53,7 +56,8 @@ CREATE TABLE "resources" (
 	"mime_type" text,
 	"content_text" text,
 	"updated_at" text NOT NULL,
-	"deleted_at" text
+	"deleted_at" text,
+	CONSTRAINT "resources_user_id_id_pk" PRIMARY KEY("user_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "sessions" (
@@ -64,7 +68,7 @@ CREATE TABLE "sessions" (
 );
 --> statement-breakpoint
 CREATE TABLE "tasks" (
-	"id" text PRIMARY KEY NOT NULL,
+	"id" text NOT NULL,
 	"user_id" text NOT NULL,
 	"course_id" text DEFAULT '' NOT NULL,
 	"title" text NOT NULL,
@@ -74,7 +78,8 @@ CREATE TABLE "tasks" (
 	"priority" text DEFAULT '中' NOT NULL,
 	"reminder" text DEFAULT '' NOT NULL,
 	"updated_at" text NOT NULL,
-	"deleted_at" text
+	"deleted_at" text,
+	CONSTRAINT "tasks_user_id_id_pk" PRIMARY KEY("user_id","id")
 );
 --> statement-breakpoint
 CREATE TABLE "users" (

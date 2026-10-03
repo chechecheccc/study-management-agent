@@ -17,11 +17,16 @@ const context = await browser.newContext({ viewport: { width: 1440, height: 950 
 const page = await context.newPage();
 page.setDefaultTimeout(25000);
 
+// 登录辅助：若服务端会话仍有效（刷新后自动恢复工作区），则跳过登录
 async function loginAs(username, password) {
-  await page.locator('input[aria-label="用户名"]').waitFor({ state: "visible", timeout: 20000 });
-  await page.locator('input[aria-label="用户名"]').fill(username);
-  await page.locator('input[aria-label="密码"]').fill(password);
-  await page.getByRole("button", { name: /^登录$/ }).click();
+  await page.waitForTimeout(2500);
+  const userField = page.locator('input[aria-label="用户名"]');
+  if (await userField.isVisible().catch(() => false)) {
+    await userField.waitFor({ state: "visible", timeout: 20000 });
+    await userField.fill(username);
+    await page.locator('input[aria-label="密码"]').fill(password);
+    await page.getByRole("button", { name: /^登录$/ }).click();
+  }
   await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
   await page.waitForTimeout(900);
   const skip = page.locator(".intro-skip");
@@ -91,3 +96,4 @@ try {
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
+

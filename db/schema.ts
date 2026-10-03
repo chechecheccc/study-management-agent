@@ -12,6 +12,7 @@ import {
   integer,
   jsonb,
   pgTable,
+  primaryKey,
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
@@ -49,7 +50,7 @@ export const sessions = pgTable(
 export const courses = pgTable(
   "courses",
   {
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
     userId: text("user_id").notNull(),
     name: text("name").notNull(),
     semester: text("semester").notNull().default(""),
@@ -58,13 +59,13 @@ export const courses = pgTable(
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
   },
-  (table) => [index("courses_user_updated_idx").on(table.userId, table.updatedAt)],
+  (table) => [primaryKey({ columns: [table.userId, table.id] }), index("courses_user_updated_idx").on(table.userId, table.updatedAt)],
 );
 
 export const resources = pgTable(
   "resources",
   {
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
     userId: text("user_id").notNull(),
     courseId: text("course_id").notNull().default(""),
     title: text("title").notNull(),
@@ -83,6 +84,7 @@ export const resources = pgTable(
     deletedAt: text("deleted_at"),
   },
   (table) => [
+    primaryKey({ columns: [table.userId, table.id] }),
     index("resources_user_updated_idx").on(table.userId, table.updatedAt),
     index("resources_content_idx").on(table.userId),
   ],
@@ -91,7 +93,7 @@ export const resources = pgTable(
 export const tasks = pgTable(
   "tasks",
   {
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
     userId: text("user_id").notNull(),
     courseId: text("course_id").notNull().default(""),
     title: text("title").notNull(),
@@ -103,7 +105,7 @@ export const tasks = pgTable(
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
   },
-  (table) => [index("tasks_user_due_idx").on(table.userId, table.dueAt)],
+  (table) => [primaryKey({ columns: [table.userId, table.id] }), index("tasks_user_due_idx").on(table.userId, table.dueAt)],
 );
 
 // ---------- 对话 ----------
@@ -111,20 +113,20 @@ export const tasks = pgTable(
 export const conversations = pgTable(
   "conversations",
   {
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
     userId: text("user_id").notNull(),
     title: text("title").notNull().default("新对话"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
   },
-  (table) => [index("conversations_user_updated_idx").on(table.userId, table.updatedAt)],
+  (table) => [primaryKey({ columns: [table.userId, table.id] }), index("conversations_user_updated_idx").on(table.userId, table.updatedAt)],
 );
 
 export const messages = pgTable(
   "messages",
   {
-    id: text("id").primaryKey(),
+    id: text("id").notNull(),
     conversationId: text("conversation_id").notNull(),
     userId: text("user_id").notNull(),
     role: text("role").notNull(), // user | assistant
@@ -134,6 +136,7 @@ export const messages = pgTable(
     createdAt: text("created_at").notNull(),
   },
   (table) => [
+    primaryKey({ columns: [table.userId, table.id] }),
     index("messages_conversation_idx").on(table.conversationId, table.createdAt),
     index("messages_user_idx").on(table.userId),
   ],
@@ -149,3 +152,4 @@ export const profiles = pgTable("profiles", {
   notes: jsonb("notes").$type<string[]>().notNull().default([]),
   updatedAt: text("updated_at").notNull(),
 });
+

@@ -1,7 +1,10 @@
-// 验证服务端账号 + 会话 + 云同步接口
+// 服务端接口测试：账号 / 会话 / 云备份 / 账号隔离
+// 说明：同步相关断言使用**每次新注册的账号**，避免历史数据累积影响断言；
+// 认证相关断言仍使用预置的管理员账号。
 const BASE = "http://localhost:3000";
 const RUN_ID = Date.now().toString(36).slice(-6);
 const NEW_USER = `tester${RUN_ID}`;
+
 const results = [];
 const check = (name, ok, detail = "") => { results.push({ name, ok }); console.log(`${ok ? "PASS" : "FAIL"}  ${name}${detail ? `  — ${detail}` : ""}`); };
 
@@ -25,18 +28,22 @@ check("未登录时同步接口返回 401", r.status === 401, `status=${r.status
 
 // 2) 错误密码
 r = await call("/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "wrong" }) });
-check("错误密码被拒绝", r.status === 401, `status=${r.status} msg=${r.data?.error?.message ?? ""}`);
+check("错误密码被拒绝", r.status === 401, `status=${r.status}`);
 
-// 3) 正确登录
+// 3) 管理员登录 + 会话
 r = await call("/api/auth/login", { method: "POST", body: JSON.stringify({ username: "admin", password: "admin123" }) });
-check("管理员登录成功", r.status === 200 && r.data?.user?.role === "admin", `user=${r.data?.user?.username}/${r.data?.user?.role}`);
+check("管理员登录成功", r.status === 200 && r.data?.user?.role === "admin", `user=${r.data?.user?.username}`);
 check("登录后下发了会话 Cookie", cookie.startsWith("qianqian_session="));
-
-// 4) 会话可用
 r = await call("/api/auth/me");
-check("会话有效（/api/auth/me）", r.data?.user?.username === "admin", `user=${r.data?.user?.username}`);
+check("会话有效（/api/auth/me）", r.data?.user?.username === "admin");
 
-// 5) 推送数据（模拟本机学习数据）
+// 4) 注册全新账号（用于同步测试，保证数据干净）
+r = await call("/api/auth/register", { method: "POST", body: JSON.stringify({ username: NEW_USER, displayName: "同步测试", password: "test123456" }) });
+check("注册新账号成功", r.status === 201 && r.data?.user?.username === NEW_USER, `status=${r.status}`);
+r = await call("/api/sync/pull");
+check("新账号初始云端数据为空", (r.data?.data?.courses?.length ?? -1) === 0, `courses=${r.data?.data?.courses?.length}`);
+
+// 5) 推送数据
 const now = new Date().toISOString();
 r = await call("/api/sync/push", {
   method: "POST",
@@ -54,29 +61,38 @@ check("推送数据成功", r.status === 200 && r.data?.ok, `stats=${JSON.string
 r = await call("/api/sync/pull");
 const d = r.data?.data;
 check("拉取到课程", d?.courses?.length === 1, `courses=${d?.courses?.length}`);
-check("拉取到资料（含正文）", d?.resources?.[0]?.contentText?.includes("关系代数"), `content=${(d?.resources?.[0]?.contentText ?? "").slice(0, 20)}`);
-check("拉取到任务", d?.tasks?.[0]?.title === "实验二报告", `title=${d?.tasks?.[0]?.title}`);
+check("拉取到资料（含正文）", (d?.resources?.[0]?.contentText ?? "").includes("关系代数"));
+check("拉取到任务", d?.tasks?.[0]?.title === "实验二报告");
 check("拉取到对话与消息", d?.conversations?.[0]?.messages?.length === 2, `messages=${d?.conversations?.[0]?.messages?.length}`);
-check("拉取到用户画像与记忆笔记", d?.profile?.notes?.[0] === "数据库第三章薄弱", `notes=${JSON.stringify(d?.profile?.notes ?? [])}`);
+check("拉取到用户画像与记忆笔记", d?.profile?.notes?.[0] === "数据库第三章薄弱");
 
-// 7) 登出后会话失效
+// 7) 按 updatedAt 合并：旧数据不应覆盖新数据
+r = await call("/api/sync/push", {
+  method: "POST",
+  body: JSON.stringify({
+    tasks: [{ id: "task-1", courseId: "course-1", title: "旧标题（不应覆盖）", type: "DDL", dueAt: "2026-10-09T23:59", status: "未开始", priority: "高", reminder: "", updatedAt: "2020-01-01T00:00:00.000Z" }],
+  }),
+});
+r = await call("/api/sync/pull");
+check("较旧的记录不会覆盖较新的", r.data?.data?.tasks?.[0]?.title === "实验二报告", `title=${r.data?.data?.tasks?.[0]?.title}`);
+
+// 8) 删除传播
+r = await call("/api/sync/delete", { method: "POST", body: JSON.stringify({ entity: "conversations", ids: ["conv-1"] }) });
+check("删除上报成功", r.status === 200 && r.data?.ok, `deleted=${r.data?.deleted}`);
+r = await call("/api/sync/pull");
+check("删除后不再返回该对话", (r.data?.data?.conversations?.length ?? -1) === 0, `conversations=${r.data?.data?.conversations?.length}`);
+
+// 9) 登出后会话失效
 r = await call("/api/auth/logout", { method: "POST" });
 check("登出成功", r.status === 200);
 cookie = "";
 r = await call("/api/auth/me");
-check("登出后会话失效", r.data?.user === null, `user=${JSON.stringify(r.data?.user)}`);
+check("登出后会话失效", r.data?.user === null);
 
-// 8) 注册新账号并验证隔离
-r = await call("/api/auth/register", { method: "POST", body: JSON.stringify({ username: NEW_USER, displayName: "测试同学", password: "test123456" }) });
-check("注册新账号成功", r.status === 201 && r.data?.user?.username === NEW_USER, `status=${r.status} msg=${r.data?.error?.message ?? ""}`);
-r = await call("/api/sync/pull");
-check("新账号看不到 admin 的数据（账号隔离）", (r.data?.data?.courses?.length ?? -1) === 0, `courses=${r.data?.data?.courses?.length}`);
-
-// 9) 重复用户名
-r = await call("/api/auth/register", { method: "POST", body: JSON.stringify({ username: "tester99", password: "test123456" }) });
+// 10) 重复用户名被拒
+r = await call("/api/auth/register", { method: "POST", body: JSON.stringify({ username: NEW_USER, password: "test123456" }) });
 check("重复用户名被拒绝", r.status === 400, `status=${r.status}`);
 
 const failed = results.filter((x) => !x.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
-

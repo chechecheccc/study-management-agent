@@ -538,3 +538,19 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .conversation-rail .section-heading .rail-new-chat:hover { transform: translateY(-1px); }
 .conversation-rail .section-heading .rail-new-chat:active { transform: translateY(0); }
 
+
+/* ---------- 登录 / 注册切换 ---------- */
+.auth-tabs { display: flex; gap: 6px; margin-bottom: 14px; background: #f1f3ec; border-radius: 10px; padding: 4px; }
+.auth-tab { flex: 1; border: 0; background: transparent; border-radius: 8px; padding: 8px 0; font-size: 13px; font-weight: 700; color: var(--muted); cursor: pointer; }
+.auth-tab.active { background: #fff; color: var(--ink); box-shadow: 0 1px 3px rgba(40,50,42,.08); }
+
+/* ---------- 云同步状态 ---------- */
+.sync-status { display: flex; align-items: center; gap: 10px; margin: 12px 0 4px; }
+.sync-status strong { display: block; font-size: 13px; }
+.sync-status small { color: var(--muted); font-size: 10px; }
+.sync-dot { width: 9px; height: 9px; border-radius: 50%; background: #a9b8a3; flex: 0 0 9px; }
+.sync-dot.syncing { background: var(--yellow); animation: sync-pulse 1s ease-in-out infinite; }
+.sync-dot.error { background: var(--coral); }
+.sync-dot.offline { background: #a9b8a3; }
+.sync-dot.idle { background: #7aa06f; }
+@keyframes sync-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }

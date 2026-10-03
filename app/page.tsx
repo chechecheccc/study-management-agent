@@ -24,6 +24,7 @@ import {
 } from "./lib/local-store";
 import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
+import { deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, touchSnapshot } from "./lib/cloud-sync";
 import type { ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
@@ -39,17 +40,16 @@ import { BatchImportQueue } from "./components/import-queue";
 import { StudyIntro } from "./components/study-intro";
 import { LoginScreen } from "./components/login-screen";
 import { AccountPanel } from "./components/account-panel";
-import {
-  SEED_ACCOUNTS,
-  authenticate,
-  buildAccount,
-  findAccountById,
-  loadAccounts,
-  saveAccounts,
-  toPublicAccount,
-  validateNewAccount,
-} from "./lib/accounts";
-import type { UserAccount } from "./lib/accounts";
+
+import type { PublicAccount } from "./lib/accounts";
+
+/** 服务端登录用户（数据库 users 表） */
+type SessionUser = {
+  id: string;
+  username: string;
+  displayName: string;
+  role: "admin" | "user";
+};
 import { runAgentLoop } from "./agent/loop";
 import type { ConfirmationDecision, HistoryMessage, ToolExecutionResult } from "./agent/loop";
 import type { AgentStepResponse, AgentToolCall, AgentWireMessage } from "./agent/protocol";
@@ -176,9 +176,14 @@ export default function Home() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskCourse, setTaskCourse] = useState("");
   const [taskDueAt, setTaskDueAt] = useState("2026-08-12T23:59");
-  const [accounts, setAccounts] = useState<UserAccount[]>([]);
-  const [currentUser, setCurrentUser] = useState<UserAccount | null>(null);
+  const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
+  // 管理员面板用的服务端账号列表
+  const [accounts, setAccounts] = useState<PublicAccount[]>([]);
   const [authReady, setAuthReady] = useState(false);
+  // 云同步状态
+  const [syncState, setSyncState] = useState<"idle" | "syncing" | "error" | "offline">("idle");
+  const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
+  const [syncMessage, setSyncMessage] = useState("");
   const [profile, setProfile] = useState<UserProfile>({ name: "", studyTime: "", goal: "", notes: [] });
   const [pendingTaskConfirm, setPendingTaskConfirm] = useState<AgentToolCall | null>(null);
   const [taskConfirmDraft, setTaskConfirmDraft] = useState<TaskConfirmDraft | null>(null);
@@ -194,6 +199,7 @@ export default function Home() {
   const importAbortControllersRef = useRef(new Map<string, AbortController>());
   const savingImportIdsRef = useRef(new Set<string>());
   const snapshotRef = useRef(snapshot);
+  const conversationsRef = useRef(conversations);
   const profileRef = useRef(profile);
 
   useGSAP(() => {
@@ -269,31 +275,33 @@ export default function Home() {
     gsap.to(".ambient-glow-two", { x: -18, y: 22, rotation: -10, repeat: -1, yoyo: true, duration: 9, ease: "sine.inOut" });
   }, { scope: appRef });
 
-  // 首次运行：植入 1 个管理员 + 2 个普通用户；已存在则保持原有账号
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      const existing = loadAccounts();
-      if (existing.length) {
-        if (!cancelled) setAccounts(existing);
-        if (!cancelled) setAuthReady(true);
-        return;
-      }
-      const seeded: UserAccount[] = [];
-      for (const seed of SEED_ACCOUNTS) {
-        seeded.push(await buildAccount(seed));
-      }
-      if (cancelled) return;
-      saveAccounts(seeded);
-      setAccounts(seeded);
-      setAuthReady(true);
-    })();
-    return () => { cancelled = true; };
-  }, []);
 
   // 登录：切换数据作用域后再加载该账号自己的数据
   // 切换账号：先同步切换所有存储作用域，再加载该账号自己的数据
-  const openUserWorkspace = async (account: UserAccount) => {
+  // 把本机数据推送到服务端（服务端逐记录按 updatedAt 取较新者，不做整包覆盖）
+  const pushToCloud = async (options?: { manual?: boolean }) => {
+    if (!currentUser) return;
+    setSyncState("syncing");
+    const result = await pushCloud({
+      courses: snapshotRef.current.courses,
+      resources: snapshotRef.current.resources,
+      tasks: snapshotRef.current.tasks,
+      conversations: conversationsRef.current,
+      profile: profileRef.current,
+    });
+    if (result.ok) {
+      setSyncState("idle");
+      setLastSyncedAt(new Date().toISOString());
+      setSyncMessage("");
+      if (options?.manual) addAssistantMessage("已同步到云端。换设备登录同一账号就能看到这些数据。");
+    } else {
+      setSyncState("error");
+      setSyncMessage(result.message);
+      if (options?.manual) addAssistantMessage(`同步失败：${result.message}`);
+    }
+  };
+
+  const openUserWorkspace = async (account: SessionUser) => {
     setDataScope(account.id);
     setMemoryScope(account.id);
     setReminderScope(account.id);
@@ -308,7 +316,39 @@ export default function Home() {
       loadConversations(),
       loadChatLog(),
     ]);
-    const next = stored.courses.length ? stored : demoSnapshot();
+
+    // 先拉云端数据，与本地按 updatedAt 合并（较新者胜）
+    let merged = stored;
+    let mergedConversations = savedConversations;
+    let mergedProfile = loadProfile();
+    let cloudOk = false;
+    try {
+      const pulled = await pullCloud();
+      if (pulled.ok) {
+        cloudOk = true;
+        const result = mergeCloud(stored, pulled.data);
+        merged = result.snapshot;
+        mergedConversations = mergeConversations(savedConversations, pulled.data.conversations);
+        if (pulled.data.profile?.name || pulled.data.profile?.notes?.length) {
+          mergedProfile = { ...mergedProfile, ...pulled.data.profile };
+        }
+        if (result.changed) void saveSnapshot(merged);
+        if (mergedConversations !== savedConversations) {
+          for (const conversation of mergedConversations) void saveConversation(conversation);
+        }
+        if (mergedProfile !== loadProfile()) {
+          saveProfile(mergedProfile);
+          setProfile(mergedProfile);
+        }
+        setLastSyncedAt(new Date().toISOString());
+      }
+    } catch {
+      cloudOk = false;
+    }
+    setSyncState(cloudOk ? "idle" : "offline");
+    if (!cloudOk) setSyncMessage("离线模式：数据保存在本机，联网后会自动同步。");
+
+    const next = merged.courses.length ? merged : demoSnapshot();
     setSnapshot(next);
     if (!stored.courses.length) void saveSnapshot(next);
 
@@ -326,6 +366,7 @@ export default function Home() {
       conversationList = [migrated];
       void saveConversation(migrated);
     }
+    conversationList = mergeConversations(mergedConversations, conversationList);
     setConversations(conversationList);
     const latest = conversationList[0] ?? null;
     setActiveConversationId(latest?.id ?? null);
@@ -348,15 +389,39 @@ export default function Home() {
     setReady(true);
   };
 
-  // 会话记录 ↔ 界面消息
-  const toChatMessages = (records: ChatLogRecord[]): ChatMessage[] =>
-    records.map((record) => ({ id: record.id, role: record.role, text: record.text, steps: record.steps, images: record.images }));
+  // 启动时向服务端确认登录态（Cookie 会话），已登录则直接恢复工作区
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/auth/me", { cache: "no-store" });
+        const body = (await response.json()) as { user?: SessionUser | null };
+        if (cancelled) return;
+        if (body.user) {
+          await openUserWorkspace(body.user);
+          if (!cancelled) setCurrentUser(body.user);
+        }
+      } catch {
+        // 离线时保持未登录状态
+      } finally {
+        if (!cancelled) setAuthReady(true);
+      }
+    })();
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-  const toHistory = (records: ChatLogRecord[]): HistoryMessage[] =>
-    records
+  // 会话记录 ↔ 界面消息
+  function toChatMessages(records: ChatLogRecord[]): ChatMessage[] {
+    return records.map((record) => ({ id: record.id, role: record.role, text: record.text, steps: record.steps, images: record.images }));
+  }
+
+  function toHistory(records: ChatLogRecord[]): HistoryMessage[] {
+    return records
       .filter((record) => record.text.trim())
       .slice(-12)
       .map((record) => ({ role: record.role, content: record.text, images: record.images }));
+  }
 
   // 打开指定会话；传 null 表示开始一个新对话
   const openConversation = (conversation: ConversationRecord | null) => {
@@ -396,35 +461,71 @@ export default function Home() {
   const removeConversation = (id: string) => {
     const next = conversations.filter((conversation) => conversation.id !== id);
     setConversations(next);
+    conversationsRef.current = next;
     void deleteConversationRecord(id);
+    // 同时上报服务端，否则刷新拉取时会把这个对话"复活"
+    void deleteCloud("conversations", [id]);
     if (id === activeConversationId) openConversation(next[0] ?? null);
   };
 
+  // 登录：服务端校验 → 建立 Cookie 会话 → 打开该账号的工作区并同步云端数据
   const login = async (username: string, password: string): Promise<string | null> => {
-    const result = await authenticate(accounts, username, password);
-    if (!result.ok) return result.message;
-    const nextAccounts = accounts.map((account) =>
-      account.id === result.account.id ? { ...account, lastLoginAt: new Date().toISOString() } : account,
-    );
-    setAccounts(nextAccounts);
-    saveAccounts(nextAccounts);
-    await openUserWorkspace(result.account);
-    setCurrentUser(result.account);
-    return null;
+    try {
+      const response = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, password }),
+      });
+      const body = (await response.json()) as { ok?: boolean; user?: SessionUser; error?: { message?: string } };
+      if (!response.ok || !body.ok || !body.user) return body.error?.message ?? "登录失败，请稍后重试。";
+      await openUserWorkspace(body.user);
+      setCurrentUser(body.user);
+      return null;
+    } catch {
+      return "无法连接服务端，请检查网络后重试。";
+    }
   };
 
-  const logout = () => {
+  const register = async (username: string, displayName: string, password: string): Promise<string | null> => {
+    try {
+      const response = await fetch("/api/auth/register", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ username, displayName, password }),
+      });
+      const body = (await response.json()) as { ok?: boolean; user?: SessionUser; error?: { message?: string } };
+      if (!response.ok || !body.ok || !body.user) return body.error?.message ?? "注册失败，请稍后重试。";
+      await openUserWorkspace(body.user);
+      setCurrentUser(body.user);
+      return null;
+    } catch {
+      return "无法连接服务端，请检查网络后重试。";
+    }
+  };
+
+  const logout = async () => {
     // 先停用持久化（ready=false），再清空账号作用域，避免登出瞬间把数据写进默认命名空间
     setReady(false);
     setCurrentUser(null);
     setDataScope("");
     setMemoryScope("");
     setReminderScope("");
+    setSyncState("idle");
+    setLastSyncedAt(null);
+    try {
+      await fetch("/api/auth/logout", { method: "POST" });
+    } catch {
+      // 网络异常时本地已登出，服务端会话会自然过期
+    }
   };
 
   useEffect(() => {
     snapshotRef.current = snapshot;
   }, [snapshot]);
+
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   useEffect(() => {
     profileRef.current = profile;
@@ -442,8 +543,33 @@ export default function Home() {
   }, []);
 
   useEffect(() => {
-    if (ready && currentUser) saveSnapshot(snapshot);
+    if (ready && currentUser) {
+      const stamped = touchSnapshot(snapshotRef.current, snapshot);
+      // 没有变化时 touchSnapshot 会返回原对象，这里就什么都不做，避免无限渲染
+      if (stamped === snapshot) {
+        saveSnapshot(snapshot);
+      } else {
+        snapshotRef.current = stamped;
+        saveSnapshot(stamped);
+        setSnapshot(stamped);
+      }
+    }
   }, [ready, snapshot, currentUser]);
+
+  // 管理员打开账号管理页时，从服务端加载真实账号列表
+  useEffect(() => {
+    if (view === "accounts" && currentUser?.role === "admin") void loadServerAccounts();
+  }, [view, currentUser]);
+
+  // 自动云同步：本地数据/对话/画像变化后，延迟 4 秒推送到服务端
+  useEffect(() => {
+    if (!ready || !currentUser) return;
+    const timer = window.setTimeout(() => {
+      void pushToCloud();
+    }, 4000);
+    return () => window.clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [snapshot, conversations, profile, ready, currentUser]);
 
   // 按会话保存：新对话在产生第一条消息时自动建档，标题取首条用户消息。
   useEffect(() => {
@@ -514,9 +640,9 @@ export default function Home() {
   const pendingCount = snapshot.resources.filter((resource) => resource.status === "未整理").length;
   const completedCount = snapshot.tasks.filter((task) => task.status === "已完成").length;
 
-  const addAssistantMessage = (text: string) => {
+  function addAssistantMessage(text: string) {
     setMessages((current) => [...current, { id: makeId("message"), role: "assistant", text }]);
-  };
+  }
 
   // ---------- Agent 循环接入 ----------
 
@@ -1555,53 +1681,75 @@ export default function Home() {
     addAssistantMessage("示例数据已恢复。你可以在此基础上继续添加自己的课程、资料和任务。");
   };
 
-  // ---------- 账号管理（仅管理员） ----------
+  // ---------- 账号管理（仅管理员，服务端数据库） ----------
+
+  async function loadServerAccounts() {
+    try {
+      const response = await fetch("/api/admin/users", { cache: "no-store" });
+      const body = (await response.json()) as { ok?: boolean; users?: PublicAccount[] };
+      if (body.ok && body.users) setAccounts(body.users);
+    } catch {
+      // 离线时保留上一次的列表
+    }
+  }
 
   const createAccount = async (input: { username: string; displayName: string; password: string; role: "admin" | "user" }): Promise<string | null> => {
-    const validated = validateNewAccount({ ...input, accounts });
-    if (!validated.ok) return validated.message;
-    const account = await buildAccount({ ...input, username: validated.username, displayName: validated.displayName });
-    const next = [...accounts, account];
-    setAccounts(next);
-    saveAccounts(next);
-    return null;
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(input),
+      });
+      const body = (await response.json()) as { ok?: boolean; error?: { message?: string } };
+      if (!response.ok || !body.ok) return body.error?.message ?? "创建失败。";
+      await loadServerAccounts();
+      return null;
+    } catch {
+      return "无法连接服务端。";
+    }
   };
 
-  const toggleAccountDisabled = (userId: string) => {
+  const toggleAccountDisabled = async (userId: string) => {
     if (userId === currentUser?.id) return;
-    const next = accounts.map((account) =>
-      account.id === userId ? { ...account, disabled: !account.disabled } : account,
-    );
-    setAccounts(next);
-    saveAccounts(next);
+    try {
+      await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, action: "toggle-disabled" }),
+      });
+      await loadServerAccounts();
+    } catch {
+      // 忽略网络异常，列表保持原样
+    }
   };
 
   const resetAccountPassword = async (userId: string, password: string): Promise<string | null> => {
     if (password.length < 6) return "密码至少 6 位。";
-    const target = findAccountById(accounts, userId);
-    if (!target) return "找不到该账号。";
-    const rebuilt = await buildAccount({ username: target.username, displayName: target.displayName, password, role: target.role });
-    const next = accounts.map((account) =>
-      account.id === userId ? { ...rebuilt, id: target.id, createdAt: target.createdAt } : account,
-    );
-    setAccounts(next);
-    saveAccounts(next);
-    return null;
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, action: "reset-password", password }),
+      });
+      const body = (await response.json()) as { ok?: boolean; error?: { message?: string } };
+      if (!response.ok || !body.ok) return body.error?.message ?? "重置失败。";
+      return null;
+    } catch {
+      return "无法连接服务端。";
+    }
   };
 
   const deleteAccount = async (userId: string) => {
     if (userId === currentUser?.id) return;
-    const next = accounts.filter((account) => account.id !== userId);
-    setAccounts(next);
-    saveAccounts(next);
-    // 同时清除该账号在本机留下的数据（IndexedDB 命名空间 + 记忆键）
     try {
-      indexedDB.deleteDatabase(`study-agent-local__${userId}`);
-      window.localStorage.removeItem(`study-agent-profile::${userId}`);
-      window.localStorage.removeItem(`study-agent-reminders-fired::${userId}`);
-      window.localStorage.removeItem(`study-agent-snapshot::${userId}`);
+      await fetch("/api/admin/users", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId }),
+      });
+      await loadServerAccounts();
     } catch {
-      // 清理失败不影响账号移除
+      // 忽略网络异常
     }
   };
 
@@ -1634,7 +1782,7 @@ export default function Home() {
   }
 
   if (!currentUser) {
-    return <LoginScreen accounts={accounts.map(toPublicAccount)} onLogin={login} />;
+    return <LoginScreen onLogin={login} onRegister={register} />;
   }
 
   return (
@@ -1816,7 +1964,7 @@ export default function Home() {
 
           {view === "accounts" && currentUser.role === "admin" ? (
             <AccountPanel
-              accounts={accounts.map(toPublicAccount)}
+              accounts={accounts}
               currentUserId={currentUser.id}
               onCreate={createAccount}
               onToggleDisabled={toggleAccountDisabled}
@@ -1829,6 +1977,10 @@ export default function Home() {
             <DataView
               snapshot={snapshot}
               profile={profile}
+              syncState={syncState}
+              syncMessage={syncMessage}
+              lastSyncedAt={lastSyncedAt}
+              onSyncNow={() => void pushToCloud({ manual: true })}
               onSaveProfile={(next) => { const cleaned = sanitizeProfile(next); setProfile(cleaned); saveProfile(cleaned); addAssistantMessage("你的画像已更新，智能体之后的每一轮思考都会记住。 "); }}
               onExport={exportBackup}
               onExportICal={exportICalendar}
@@ -2314,7 +2466,7 @@ function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprov
 
 function PlanItem({ date, title, duration }: { date: string; title: string; duration: string }) { return <div className="plan-item"><time>{date}</time><div><strong>{title}</strong><span>关联资料 · 可调整</span></div><b>{duration}</b></div>; }
 
-function DataView({ snapshot, profile, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
+function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, onSyncNow, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; syncState: "idle" | "syncing" | "error" | "offline"; syncMessage: string; lastSyncedAt: string | null; onSyncNow: () => void; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
   const [draft, setDraft] = useState<UserProfile>(profile);
   return (
     <div className="page-view">
@@ -2326,6 +2478,34 @@ function DataView({ snapshot, profile, onSaveProfile, onExport, onExportICal, on
           <p>使用备份文件可以在浏览器或设备之间迁移你的课程、资料、任务与对话。</p>
           <div className="data-stats"><div><strong>{snapshot.courses.length}</strong><span>门课程</span></div><div><strong>{snapshot.resources.length}</strong><span>份资料</span></div><div><strong>{snapshot.tasks.length}</strong><span>条任务</span></div></div>
           <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><button className="quiet-button" onClick={onExportICal}>导出日历 (.ics)</button><button className="quiet-button" onClick={onEnableNotifications}>开启桌面提醒</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
+        </div>
+        <div className="data-card">
+          <div className="card-kicker">CLOUD SYNC</div>
+          <h3>云同步 · 换设备可用</h3>
+          <p>数据会自动备份到服务器，在其它设备用同一账号登录即可看到。原始文件目前仍只保存在本机。</p>
+          <div className="sync-status">
+            <span className={`sync-dot ${syncState}`} />
+            <div>
+              <strong>
+                {syncState === "syncing" ? "正在同步…"
+                  : syncState === "error" ? "同步失败"
+                    : syncState === "offline" ? "离线模式"
+                      : lastSyncedAt ? "已同步" : "等待首次同步"}
+              </strong>
+              <small>
+                {syncState === "error" || syncState === "offline"
+                  ? (syncMessage || "联网后会自动重试")
+                  : lastSyncedAt
+                    ? `上次同步：${formatDate(lastSyncedAt)}`
+                    : "有任何改动都会自动同步"}
+              </small>
+            </div>
+          </div>
+          <div className="data-actions">
+            <button className="primary-button" onClick={onSyncNow} disabled={syncState === "syncing"}>
+              {syncState === "syncing" ? "同步中…" : "立即同步"}
+            </button>
+          </div>
         </div>
         <div className="data-card">
           <div className="card-kicker">AGENT MEMORY</div>
@@ -2428,6 +2608,20 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

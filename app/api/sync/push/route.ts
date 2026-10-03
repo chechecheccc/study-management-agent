@@ -2,7 +2,7 @@
 //
 // 合并策略：**逐记录按 updatedAt 比较，较新者胜**；不删除本地没有的记录。
 // 这样多设备交替使用时不会互相清空数据（快照式全覆盖会有这个风险）。
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { withPg } from "../../../../db/pg";
 import { conversations, courses, messages, profiles, resources, tasks } from "../../../../db/schema";
 import { getSessionUser } from "../../../lib/server-auth";
@@ -45,9 +45,9 @@ export async function POST(request: Request) {
         updatedAt: String(item.updatedAt ?? now),
         deletedAt: (item.deletedAt as string | null) ?? null,
       };
-      const existing = await db.select({ updatedAt: courses.updatedAt }).from(courses).where(eq(courses.id, row.id)).limit(1);
+      const existing = await db.select({ updatedAt: courses.updatedAt }).from(courses).where(and(eq(courses.userId, row.userId), eq(courses.id, row.id))).limit(1);
       if (existing[0] && existing[0].updatedAt >= row.updatedAt) continue;
-      await db.insert(courses).values(row).onConflictDoUpdate({ target: courses.id, set: row });
+      await db.insert(courses).values(row).onConflictDoUpdate({ target: [courses.userId, courses.id], set: row });
       stats.courses += 1;
     }
 
@@ -71,9 +71,9 @@ export async function POST(request: Request) {
         updatedAt: String(item.updatedAt ?? now),
         deletedAt: (item.deletedAt as string | null) ?? null,
       };
-      const existing = await db.select({ updatedAt: resources.updatedAt }).from(resources).where(eq(resources.id, row.id)).limit(1);
+      const existing = await db.select({ updatedAt: resources.updatedAt }).from(resources).where(and(eq(resources.userId, row.userId), eq(resources.id, row.id))).limit(1);
       if (existing[0] && existing[0].updatedAt >= row.updatedAt) continue;
-      await db.insert(resources).values(row).onConflictDoUpdate({ target: resources.id, set: row });
+      await db.insert(resources).values(row).onConflictDoUpdate({ target: [resources.userId, resources.id], set: row });
       stats.resources += 1;
     }
 
@@ -93,9 +93,9 @@ export async function POST(request: Request) {
         updatedAt: String(item.updatedAt ?? now),
         deletedAt: (item.deletedAt as string | null) ?? null,
       };
-      const existing = await db.select({ updatedAt: tasks.updatedAt }).from(tasks).where(eq(tasks.id, row.id)).limit(1);
+      const existing = await db.select({ updatedAt: tasks.updatedAt }).from(tasks).where(and(eq(tasks.userId, row.userId), eq(tasks.id, row.id))).limit(1);
       if (existing[0] && existing[0].updatedAt >= row.updatedAt) continue;
-      await db.insert(tasks).values(row).onConflictDoUpdate({ target: tasks.id, set: row });
+      await db.insert(tasks).values(row).onConflictDoUpdate({ target: [tasks.userId, tasks.id], set: row });
       stats.tasks += 1;
     }
 
@@ -111,9 +111,9 @@ export async function POST(request: Request) {
         updatedAt,
         deletedAt: (item.deletedAt as string | null) ?? null,
       };
-      const existing = await db.select({ updatedAt: conversations.updatedAt }).from(conversations).where(eq(conversations.id, convRow.id)).limit(1);
+      const existing = await db.select({ updatedAt: conversations.updatedAt }).from(conversations).where(and(eq(conversations.userId, convRow.userId), eq(conversations.id, convRow.id))).limit(1);
       if (!existing[0] || existing[0].updatedAt < updatedAt) {
-        await db.insert(conversations).values(convRow).onConflictDoUpdate({ target: conversations.id, set: convRow });
+        await db.insert(conversations).values(convRow).onConflictDoUpdate({ target: [conversations.userId, conversations.id], set: convRow });
         stats.conversations += 1;
       }
 
@@ -131,7 +131,7 @@ export async function POST(request: Request) {
           createdAt: String(message.createdAt ?? updatedAt),
         };
         await db.insert(messages).values(messageRow).onConflictDoUpdate({
-          target: messages.id,
+          target: [messages.userId, messages.id],
           set: { text: messageRow.text, steps: messageRow.steps, images: messageRow.images },
         });
         stats.messages += 1;
@@ -173,5 +173,7 @@ function json(body: unknown, status = 200) {
     headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
   });
 }
+
+
 
 

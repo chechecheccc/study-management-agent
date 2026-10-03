@@ -44,3 +44,4 @@ next-env.d.ts
 /work/
 /.dev.*.log
 .e2e/
+.e2e-auth/

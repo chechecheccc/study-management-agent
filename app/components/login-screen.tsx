@@ -1,16 +1,17 @@
 "use client";
 
 import { useState } from "react";
-import type { PublicAccount } from "../lib/accounts";
 
 type Props = {
-  accounts: PublicAccount[];
   onLogin: (username: string, password: string) => Promise<string | null>;
+  onRegister: (username: string, displayName: string, password: string) => Promise<string | null>;
 };
 
-// 登录界面：展示预置账号提示，方便演示与首次使用。
-export function LoginScreen({ accounts, onLogin }: Props) {
+// 登录 / 注册：账号保存在服务端数据库，支持换设备登录后同步数据
+export function LoginScreen({ onLogin, onRegister }: Props) {
+  const [mode, setMode] = useState<"login" | "register">("login");
   const [username, setUsername] = useState("");
+  const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [busy, setBusy] = useState(false);
@@ -20,14 +21,15 @@ export function LoginScreen({ accounts, onLogin }: Props) {
     if (busy) return;
     setBusy(true);
     setError("");
-    const message = await onLogin(username, password);
+    const message = mode === "login"
+      ? await onLogin(username, password)
+      : await onRegister(username, displayName, password);
     if (message) setError(message);
     setBusy(false);
   };
 
-  const quickFill = (name: string, pass: string) => {
-    setUsername(name);
-    setPassword(pass);
+  const switchMode = (next: "login" | "register") => {
+    setMode(next);
     setError("");
   };
 
@@ -43,8 +45,33 @@ export function LoginScreen({ accounts, onLogin }: Props) {
             <div className="brand-caption">qianqian</div>
           </div>
         </div>
-        <h1>登录你的学习空间</h1>
-        <p className="auth-copy">每个账号拥有独立的资料库、任务、复习计划与对话记录。</p>
+
+        <div className="auth-tabs" role="tablist">
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "login"}
+            className={`auth-tab ${mode === "login" ? "active" : ""}`}
+            onClick={() => switchMode("login")}
+          >
+            登录
+          </button>
+          <button
+            type="button"
+            role="tab"
+            aria-selected={mode === "register"}
+            className={`auth-tab ${mode === "register" ? "active" : ""}`}
+            onClick={() => switchMode("register")}
+          >
+            注册
+          </button>
+        </div>
+
+        <p className="auth-copy">
+          {mode === "login"
+            ? "在任意设备登录同一账号，课程、任务、对话与记忆会自动同步。"
+            : "注册后即可在其它设备登录，数据自动同步。"}
+        </p>
 
         <form onSubmit={submit} className="auth-form">
           <label>
@@ -52,47 +79,59 @@ export function LoginScreen({ accounts, onLogin }: Props) {
             <input
               value={username}
               onChange={(event) => setUsername(event.target.value)}
-              placeholder="例如 admin"
+              placeholder="3-20 位小写字母或数字"
               autoComplete="username"
               aria-label="用户名"
             />
           </label>
+          {mode === "register" ? (
+            <label>
+              <span>显示名称</span>
+              <input
+                value={displayName}
+                onChange={(event) => setDisplayName(event.target.value)}
+                placeholder="例如 小林"
+                aria-label="显示名称"
+              />
+            </label>
+          ) : null}
           <label>
             <span>密码</span>
             <input
               type="password"
               value={password}
               onChange={(event) => setPassword(event.target.value)}
-              placeholder="请输入密码"
-              autoComplete="current-password"
+              placeholder={mode === "register" ? "至少 6 位" : "请输入密码"}
+              autoComplete={mode === "register" ? "new-password" : "current-password"}
               aria-label="密码"
             />
           </label>
           {error ? <div className="auth-error">{error}</div> : null}
           <button className="primary-button wide" type="submit" disabled={busy}>
-            {busy ? "正在登录…" : "登录"}
+            {busy ? "正在处理…" : mode === "login" ? "登录" : "注册并进入"}
           </button>
         </form>
 
         <div className="auth-accounts">
-          <div className="section-label">预置账号（点击填入）</div>
-          {accounts.map((account) => (
-            <button
-              className="auth-account-row"
-              key={account.id}
-              type="button"
-              onClick={() => quickFill(account.username, account.username === "admin" ? "admin123" : "123456")}
-            >
-              <span className={`role-badge ${account.role}`}>{account.role === "admin" ? "管理员" : "学生"}</span>
-              <strong>{account.displayName}</strong>
-              <small>{account.username}</small>
-            </button>
-          ))}
-          <small className="auth-hint">演示密码：管理员 admin123，普通用户 123456。登录后管理员可以在「账号管理」里新增或停用账号。</small>
+          <div className="section-label">预置演示账号（点击填入）</div>
+          <button className="auth-account-row" type="button" onClick={() => { setMode("login"); setUsername("admin"); setPassword("admin123"); setError(""); }}>
+            <span className="role-badge admin">管理员</span>
+            <strong>管理员</strong>
+            <small>admin</small>
+          </button>
+          <button className="auth-account-row" type="button" onClick={() => { setMode("login"); setUsername("student1"); setPassword("123456"); setError(""); }}>
+            <span className="role-badge user">学生</span>
+            <strong>小林</strong>
+            <small>student1</small>
+          </button>
+          <button className="auth-account-row" type="button" onClick={() => { setMode("login"); setUsername("student2"); setPassword("123456"); setError(""); }}>
+            <span className="role-badge user">学生</span>
+            <strong>小周</strong>
+            <small>student2</small>
+          </button>
+          <small className="auth-hint">演示密码：管理员 admin123，普通用户 123456。管理员可在「账号管理」里新增或停用账号。</small>
         </div>
       </section>
     </main>
   );
 }
-
-

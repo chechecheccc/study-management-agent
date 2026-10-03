@@ -13,18 +13,33 @@ const page = await context.newPage();
 page.setDefaultTimeout(30000);
 page.on("pageerror", (e) => console.log("[pageerror]", e.message.slice(0, 160)));
 
+const RUN_ID = Date.now().toString(36).slice(-5);
+const TEST_USER = `conv${RUN_ID}`;
+const TEST_PASS = "conv123456";
+let registered = false;
+
+// 首次用全新账号注册（避免历史数据累积影响断言），之后复用会话
 async function login() {
-  await page.waitForTimeout(2400);
+  await page.waitForTimeout(2800);
   const u = page.locator('input[aria-label="用户名"]');
   if (await u.isVisible().catch(() => false)) {
-    await u.fill("admin");
-    await page.locator('input[aria-label="密码"]').fill("admin123");
-    await page.getByRole("button", { name: /^登录$/ }).click();
-    await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
-    await page.waitForTimeout(1200);
-    const skip = page.locator(".intro-skip");
-    if (await skip.count()) await skip.click({ force: true, timeout: 3000 }).catch(() => {});
+    if (!registered) {
+      await page.getByRole("tab", { name: "注册" }).click();
+      await u.fill(TEST_USER);
+      await page.locator('input[aria-label="显示名称"]').fill("会话测试");
+      await page.locator('input[aria-label="密码"]').fill(TEST_PASS);
+      await page.getByRole("button", { name: /注册并进入/ }).click();
+      registered = true;
+    } else {
+      await u.fill(TEST_USER);
+      await page.locator('input[aria-label="密码"]').fill(TEST_PASS);
+      await page.getByRole("button", { name: /^登录$/ }).click();
+    }
   }
+  await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
+  await page.waitForTimeout(1200);
+  const skip = page.locator(".intro-skip");
+  if (await skip.count()) await skip.click({ force: true, timeout: 3000 }).catch(() => {});
   await page.waitForTimeout(2000);
 }
 
@@ -48,7 +63,7 @@ try {
   await page.getByRole("button", { name: /对话记录/ }).click();
   await page.waitForTimeout(800);
   const rows1 = await page.locator(".conversation-row").count();
-  check("发出消息后自动保存为一个对话", rows1 >= 1, `对话数=${rows1}`);
+  check("发出消息后自动保存为一个对话", rows1 === 1, `对话数=${rows1}`);
   const groupLabels = await page.locator(".conversation-group-label").allTextContents();
   check("对话按日期分组显示", groupLabels.includes("今天"), `分组=${groupLabels.join("/")}`);
 
@@ -63,7 +78,7 @@ try {
   await page.getByRole("button", { name: /对话记录/ }).click();
   await page.waitForTimeout(800);
   const rows2 = await page.locator(".conversation-row").count();
-  check("两个对话都在列表中", rows2 >= 2, `对话数=${rows2}`);
+  check("两个对话都在列表中", rows2 === 2, `对话数=${rows2}`);
   const titles = await page.locator(".conversation-open strong").allTextContents();
   check("对话标题取自首条用户消息", titles.some((t) => t.includes("第二个对话")), `标题=${titles.join(" | ")}`);
   check("首个对话标题也取自用户消息（不被巡检消息抢占）", titles.some((t) => t.includes("第一个对话")), `标题=${titles.join(" | ")}`);
@@ -81,7 +96,7 @@ try {
   await page.getByRole("button", { name: /对话记录/ }).click();
   await page.waitForTimeout(900);
   const rows3 = await page.locator(".conversation-row").count();
-  check("刷新后对话仍保留", rows3 >= 2, `对话数=${rows3}`);
+  check("刷新后对话仍保留", rows3 === 2, `对话数=${rows3}`);
 
   // 7) 删除一个对话
   await page.locator(".conversation-row").last().locator(".conversation-delete").click();
@@ -105,4 +120,6 @@ try {
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
+
+
 
