@@ -188,7 +188,7 @@ export default function Home() {
 
   const batchRunningRef = useRef(false);
   const agentRunningRef = useRef(false);
-  const agentHistoryRef = useRef<HistoryMessage[]>(loadAgentHistory());
+  const agentHistoryRef = useRef<HistoryMessage[]>([]);
   const confirmResolverRef = useRef<{ settle: (decision: ConfirmationDecision) => void; timerId: number } | null>(null);
   const cancelledImportIdsRef = useRef(new Set<string>());
   const importAbortControllersRef = useRef(new Map<string, AbortController>());
@@ -965,7 +965,6 @@ export default function Home() {
         { role: "assistant", content: finalText },
       ];
       agentHistoryRef.current = nextHistory.slice(-12);
-      saveAgentHistory(agentHistoryRef.current);
       agentRunningRef.current = false;
       setAgentRunning(false);
       setAgentBackground(false);
@@ -1123,7 +1122,7 @@ export default function Home() {
     const today = new Date().toISOString().slice(0, 10);
     let alreadyShown = false;
     try {
-      alreadyShown = window.localStorage.getItem("study-agent-proactive-date") === today;
+      alreadyShown = window.localStorage.getItem(scopedLocalKey(PROACTIVE_KEY, currentUser?.id ?? null)) === today;
     } catch {
       alreadyShown = false;
     }
@@ -1131,7 +1130,7 @@ export default function Home() {
     const signals = computeProactiveSignals(snapshotRef.current);
     if (!signals.length) return;
     try {
-      window.localStorage.setItem("study-agent-proactive-date", today);
+      window.localStorage.setItem(scopedLocalKey(PROACTIVE_KEY, currentUser?.id ?? null), today);
     } catch {
       // 忽略存储失败，明天再提醒一次也无妨
     }
@@ -2404,34 +2403,12 @@ function weekNumber(date: Date) {
   return Math.max(1, Math.ceil(((date.getTime() - start.getTime()) / 86_400_000 + start.getDay() + 1) / 7));
 }
 
-const HISTORY_KEY = "study-agent-history";
-
-function loadAgentHistory(): HistoryMessage[] {
-  if (typeof window === "undefined") return [];
-  try {
-    const raw = window.localStorage.getItem(HISTORY_KEY);
-    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
-    if (!Array.isArray(parsed)) return [];
-    return parsed
-      .filter((item): item is HistoryMessage =>
-        typeof item === "object" && item !== null
-        && ((item as HistoryMessage).role === "user" || (item as HistoryMessage).role === "assistant")
-        && typeof (item as HistoryMessage).content === "string",
-      )
-      .slice(-12);
-  } catch {
-    return [];
-  }
+// 按账号隔离的 localStorage 键：避免切换账号时读到上一个账号的标记
+function scopedLocalKey(base: string, userId: string | null) {
+  return userId ? `${base}::${userId}` : base;
 }
 
-function saveAgentHistory(history: HistoryMessage[]) {
-  if (typeof window === "undefined") return;
-  try {
-    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(history.slice(-12)));
-  } catch {
-    // 存储失败不影响对话
-  }
-}
+const PROACTIVE_KEY = "study-agent-proactive-date";
 
 function contentExcerpt(contentText: string, keyword: string) {
   const text = contentText.replace(/\s+/g, " ").trim();
@@ -2451,6 +2428,8 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
 
 
 

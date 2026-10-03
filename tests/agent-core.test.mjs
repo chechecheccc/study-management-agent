@@ -200,7 +200,7 @@ test("记忆与提示词：画像注入系统提示词", () => {
   const profile = sanitizeProfile({ name: " 小王 ", studyTime: "工作日晚上", goal: "数据库期末 90 分" });
   assert.equal(profile.name, "小王");
   const prompt = buildAgentSystemPrompt({ currentDate: "2026-09-09T09:00:00+08:00", timezone: "Asia/Shanghai", profile });
-  assert.match(prompt, /学习管家/);
+  assert.match(prompt, /浅浅/);
   assert.match(prompt, /小王/);
   assert.match(prompt, /工作日晚上/);
   assert.match(prompt, /确认卡片/);
@@ -480,3 +480,4 @@ test("会话时间标注：今天显示时分，昨天显示昨天，更早显�
   assert.equal(formatConversationStamp(older, now), "9/20");
   assert.equal(formatConversationStamp("不是日期", now), "");
 });
+
