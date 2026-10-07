@@ -564,3 +564,12 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .course-swatch.all { background: linear-gradient(135deg, var(--coral) 0%, var(--blue) 100%); }
 .course-row.active { background: rgba(255,255,255,.08); color: #fff; }
 .course-row.active span:not(.course-count) { font-weight: 700; }
+
+/* ---------- 数据管理：统计与危险操作区 ---------- */
+.data-stats { grid-template-columns: repeat(4, 1fr); }
+.data-card p b { color: var(--ink); }
+.danger-zone { margin-top: 6px; padding-top: 12px; border-top: 1px dashed var(--line); }
+.primary-data .data-stats { grid-template-columns: repeat(4, 1fr); }
+@media (max-width: 720px) {
+  .data-stats, .primary-data .data-stats { grid-template-columns: repeat(2, 1fr); }
+}

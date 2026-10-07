@@ -1666,7 +1666,16 @@ export default function Home() {
   };
 
   const exportBackup = () => {
-    const blob = new Blob([JSON.stringify({ ...snapshot, profile }, null, 2)], { type: "application/json" });
+    // 备份范围：课程、资料、任务、对话、画像。
+    // 不含原始文件（PDF/图片本体）——它们保存在服务端与本机，可在资料库中单独下载。
+    const payload = {
+      version: 2,
+      exportedAt: new Date().toISOString(),
+      ...snapshot,
+      profile,
+      conversations: conversationsRef.current,
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
     const url = URL.createObjectURL(blob);
     const link = document.createElement("a");
     link.href = url;
@@ -1690,7 +1699,20 @@ export default function Home() {
           setProfile(nextProfile);
           saveProfile(nextProfile);
         }
-        addAssistantMessage("备份已载入当前浏览器。请检查课程、资料和任务数量是否符合预期。");
+        // 旧版备份没有对话字段，缺失时保持现有对话不变
+        const importedConversations = (imported as { conversations?: ConversationRecord[] }).conversations;
+        if (Array.isArray(importedConversations)) {
+          setConversations(importedConversations);
+          conversationsRef.current = importedConversations;
+          for (const conversation of importedConversations) void saveConversation(conversation);
+        }
+        const summary = [
+          `${imported.courses.length} 门课程`,
+          `${imported.resources.length} 份资料`,
+          `${imported.tasks.length} 条任务`,
+          Array.isArray(importedConversations) ? `${importedConversations.length} 个对话` : null,
+        ].filter(Boolean).join("、");
+        addAssistantMessage(`备份已载入：${summary}。原始文件不在备份里，需要时请在资料库中重新上传。`);
       } catch {
         addAssistantMessage("这个备份文件无法读取。请确认它是浅浅导出的 JSON 备份。");
       }
@@ -2038,6 +2060,7 @@ export default function Home() {
               syncState={syncState}
               syncMessage={syncMessage}
               lastSyncedAt={lastSyncedAt}
+              conversationCount={conversations.length}
               onSyncNow={() => void pushToCloud({ manual: true })}
               onSaveProfile={(next) => { const cleaned = sanitizeProfile(next); setProfile(cleaned); saveProfile(cleaned); addAssistantMessage("你的画像已更新，智能体之后的每一轮思考都会记住。 "); }}
               onExport={exportBackup}
@@ -2596,8 +2619,12 @@ function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprov
 
 function PlanItem({ date, title, duration }: { date: string; title: string; duration: string }) { return <div className="plan-item"><time>{date}</time><div><strong>{title}</strong><span>关联资料 · 可调整</span></div><b>{duration}</b></div>; }
 
-function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, onSyncNow, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; syncState: "idle" | "syncing" | "error" | "offline"; syncMessage: string; lastSyncedAt: string | null; onSyncNow: () => void; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
+function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, onSyncNow, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; syncState: "idle" | "syncing" | "error" | "offline"; syncMessage: string; lastSyncedAt: string | null; conversationCount: number; onSyncNow: () => void; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
   const [draft, setDraft] = useState<UserProfile>(profile);
+  const [confirmReset, setConfirmReset] = useState(false);
+  // 本机资料里记录的文件大小合计
+  const totalFileBytes = snapshot.resources.reduce((sum, resource) => sum + (resource.fileSize ?? 0), 0);
+  const fileSizeLabel = totalFileBytes > 0 ? formatBytes(totalFileBytes) : "—";
   return (
     <div className="page-view">
       <PageHeader eyebrow="DATA" title="数据管理" description="在这里备份、恢复与整理你的学习空间。" />
@@ -2605,14 +2632,22 @@ function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, onS
         <div className="data-card primary-data">
           <div className="card-kicker">BACKUP</div>
           <h2>这是你的个人学习空间</h2>
-          <p>使用备份文件可以在浏览器或设备之间迁移你的课程、资料、任务与对话。</p>
-          <div className="data-stats"><div><strong>{snapshot.courses.length}</strong><span>门课程</span></div><div><strong>{snapshot.resources.length}</strong><span>份资料</span></div><div><strong>{snapshot.tasks.length}</strong><span>条任务</span></div></div>
+          <p>
+            备份文件包含<b>课程、资料、任务、对话与画像</b>，可在浏览器或设备之间迁移。
+            原始文件（PDF / 图片本体）不在备份里——它们保存在服务端与本机，可在资料库中单独打开或下载。
+          </p>
+          <div className="data-stats">
+            <div><strong>{snapshot.courses.length}</strong><span>门课程</span></div>
+            <div><strong>{snapshot.resources.length}</strong><span>份资料</span></div>
+            <div><strong>{snapshot.tasks.length}</strong><span>条任务</span></div>
+            <div><strong>{conversationCount}</strong><span>个对话</span></div>
+          </div>
           <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><button className="quiet-button" onClick={onExportICal}>导出日历 (.ics)</button><button className="quiet-button" onClick={onEnableNotifications}>开启桌面提醒</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
         </div>
         <div className="data-card">
           <div className="card-kicker">CLOUD SYNC</div>
           <h3>云同步 · 换设备可用</h3>
-          <p>数据会自动备份到服务器，在其它设备用同一账号登录即可看到。原始文件目前仍只保存在本机。</p>
+          <p>课程、资料、任务、对话与原文件都会备份到服务器，在其它设备用同一账号登录即可看到、并直接打开原文件。</p>
           <div className="sync-status">
             <span className={`sync-dot ${syncState}`} />
             <div>
@@ -2649,19 +2684,30 @@ function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, onS
           <div className="data-actions"><button className="primary-button" onClick={() => onSaveProfile(draft)}>保存画像</button></div>
         </div>
         <div className="data-card">
-          <div className="card-kicker">CURRENT STATUS</div>
-          <h3>当前能力</h3>
-          <ul className="check-list">
-            <li><span>✓</span>Agent 循环：多步推理 + 工具调用</li>
-            <li><span>✓</span>资料正文检索：入库文件内容可读可问</li>
-            <li><span>✓</span>定时提醒：对话提醒 + 桌面通知</li>
-            <li><span>✓</span>跨会话记忆：对话历史 + 记忆笔记</li>
-            <li><span>✓</span>计划可调整：update_task 顺延与修改</li>
-            <li><span>✓</span>写入操作先弹确认卡片</li>
-            <li><span>✓</span>主动巡检临近 DDL 并先开口</li>
-            <li><span>✓</span>iCal 日历导出</li>
-          </ul>
-          <button className="text-button" onClick={onReset}>恢复示例数据</button>
+          <div className="card-kicker">STORAGE</div>
+          <h3>本机存储与重置</h3>
+          <p>这些数字来自当前浏览器。原文件已备份到服务端，即使清空浏览器也能重新取回。</p>
+          <div className="data-stats">
+            <div><strong>{snapshot.resources.length}</strong><span>份资料</span></div>
+            <div><strong>{fileSizeLabel}</strong><span>原文件总计</span></div>
+            <div><strong>{conversationCount}</strong><span>个对话</span></div>
+            <div><strong>{profile.notes.length}</strong><span>条记忆笔记</span></div>
+          </div>
+          <div className="data-actions danger-zone">
+            {confirmReset ? (
+              <>
+                <button className="quiet-button danger" onClick={() => { onReset(); setConfirmReset(false); }}>确认恢复示例数据</button>
+                <button className="text-button" onClick={() => setConfirmReset(false)}>取消</button>
+              </>
+            ) : (
+              <button className="text-button" onClick={() => setConfirmReset(true)}>恢复示例数据…</button>
+            )}
+          </div>
+          {confirmReset ? (
+            <small className="auth-hint">
+              会把 3 门示例课程、4 份示例资料与 3 条示例任务加回你的空间，并同步到服务端。你自己的资料不会被删除。
+            </small>
+          ) : null}
         </div>
       </div>
     </div>
@@ -2752,6 +2798,8 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
 
 
 
