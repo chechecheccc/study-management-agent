@@ -13,6 +13,7 @@ import {
   emptySnapshot,
   getLocalFile,
   deleteConversationRecord,
+  deleteLocalFile,
   loadChatLog,
   loadConversations,
   loadSnapshot,
@@ -1441,9 +1442,15 @@ export default function Home() {
   };
 
   const handleAttachments = async (files: File[]) => {
-    if (!files.length || agentRunningRef.current) return;
+    if (!files.length) return;
+    // 浅浅正在处理消息时不去抢队列，但要明确告诉用户，不能静默丢弃文件
+    if (agentRunningRef.current) {
+      showComposerHint("浅浅正在处理上一条消息，等它回复完再上传文件。", "error");
+      return;
+    }
     if (batchRunningRef.current) {
       setExtractError("当前批次仍在处理中，请完成或取消后再添加新文件。");
+      showComposerHint("已有一批文件在处理中，请等这批完成。", "error");
       return;
     }
 
@@ -1753,6 +1760,24 @@ export default function Home() {
     }
   };
 
+  // 删除资料：本地移除 + 删除原文件 + 上报云端（否则刷新会被同步回来）
+  const deleteResource = async (resource: Resource) => {
+    setSnapshot((current) => {
+      const next = { ...current, resources: current.resources.filter((item) => item.id !== resource.id) };
+      snapshotRef.current = next;
+      return next;
+    });
+    if (resource.fileId) {
+      try {
+        await deleteLocalFile(resource.fileId);
+      } catch {
+        // 文件已被清理时忽略
+      }
+    }
+    void deleteCloud("resources", [resource.id]);
+    addAssistantMessage(`已删除资料「${resource.title}」。`);
+  };
+
   const exportICalendar = () => {
     const blob = new Blob([buildICalendar(snapshot)], { type: "text/calendar;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -1917,6 +1942,7 @@ export default function Home() {
             <ResourcesView
               resources={filteredResources}
               courseMap={courseMap}
+              onDeleteResource={deleteResource}
               courses={snapshot.courses}
               search={search}
               onSearch={setSearch}
@@ -2367,9 +2393,10 @@ function TaskMini({ task, course }: { task: Task; course?: Course }) {
 }
 
 function ResourcesView({
-  resources, courseMap, courses, search, onSearch, showForm, setShowForm, title, setTitle, courseId, setCourseId, type, setType, onCreate,
+  resources, courseMap, courses, search, onSearch, showForm, setShowForm, title, setTitle, courseId, setCourseId, type, setType, onCreate, onDeleteResource,
 }: {
   resources: Resource[];
+  onDeleteResource: (resource: Resource) => void;
   courseMap: Map<string, Course>;
   courses: Course[];
   search: string;
@@ -2390,7 +2417,7 @@ function ResourcesView({
   return <div className="page-view"><PageHeader eyebrow="LIBRARY" title="课程资料库" description="让每份资料有位置，也有下一步。" action={<button className="primary-button" onClick={() => setShowForm(!showForm)}>＋ 添加资料</button>} />
     {showForm ? <div className="inline-form"><div className="form-title">新建资料卡片 <span>若要保存原文件并自动识别，请在浅浅页面点击“＋”上传</span></div><div className="form-grid"><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="资料名称" /><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value as Resource["type"])}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select><button className="primary-button" onClick={onCreate}>保存资料</button></div></div> : null}
     <div className="toolbar"><label className="local-search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索标题、课程、标签" /></label><div className="filter-chip">全部课程⌄</div><div className="filter-chip">全部状态⌄</div></div>
-    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{resources.length} 份资料 <span>· 本地索引</span></div>{resources.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{resources.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} /></div>
+    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{resources.length} 份资料 <span>· 本地索引</span></div>{resources.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{resources.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} /></div>
   </div>;
 }
 
@@ -2398,28 +2425,47 @@ function ResourceListItem({ resource, course, selected, onSelect }: { resource: 
   return <button className={`resource-item ${selected ? "selected" : ""}`} onClick={onSelect}><span className={`file-badge ${resource.type === "作业" ? "coral" : resource.type === "笔记" ? "blue" : ""}`}>{resource.type.slice(0, 1)}</span><span className="resource-main"><strong>{resource.title}</strong><small>{course?.name ?? "未分类"} · {resource.fileName ?? "手动资料卡片"}</small><span className="tag-line">{resource.tags.map((tag) => <em key={tag}>{tag}</em>)}</span></span><span className="resource-status">{resource.status}</span><span className="chevron">›</span></button>;
 }
 
-function LocalResourcePreview({ resource, course }: { resource: Resource | null; course?: Course }) {
-  const [preview, setPreview] = useState<LocalPreview | null>(null);
-  const [loading, setLoading] = useState(Boolean(resource?.fileId));
-  const [error, setError] = useState("");
+function LocalResourcePreview({ resource, course, onDelete }: { resource: Resource | null; course?: Course; onDelete?: (resource: Resource) => void }) {
+  // 载入结果整块存在一个 state 里，避免在 effect 里同步 setState（会触发级联渲染）；
+  // 是否"加载中"由 fileId 与已载入结果推导得出。
+  const [loaded, setLoaded] = useState<{
+    fileId: string;
+    preview: LocalPreview | null;
+    fileUrl: string | null;
+    error: string;
+  } | null>(null);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+
+  const fileId = resource?.fileId ?? null;
 
   useEffect(() => {
+    if (!fileId) return;
     let active = true;
     let currentPreview: LocalPreview | null = null;
-    if (!resource?.fileId) return;
-    getLocalFile(resource.fileId)
-      .then(async (record) => {
+    let currentFileUrl: string | null = null;
+    (async () => {
+      try {
+        const record = await getLocalFile(fileId);
         if (!record) throw new Error("FILE_NOT_FOUND");
+        currentFileUrl = URL.createObjectURL(record.blob);
         currentPreview = await buildLocalPreview(record);
-        if (active) setPreview(currentPreview);
-      })
-      .catch(() => { if (active) setError("原始文件无法读取，可能已被浏览器清理。 "); })
-      .finally(() => { if (active) setLoading(false); });
+        if (active) setLoaded({ fileId, preview: currentPreview, fileUrl: currentFileUrl, error: "" });
+      } catch {
+        if (active) setLoaded({ fileId, preview: null, fileUrl: null, error: "原始文件无法读取，可能已被浏览器清理。" });
+      }
+    })();
     return () => {
       active = false;
       releaseLocalPreview(currentPreview);
+      if (currentFileUrl) URL.revokeObjectURL(currentFileUrl);
     };
-  }, [resource?.fileId]);
+  }, [fileId]);
+
+  const ready = loaded && loaded.fileId === fileId ? loaded : null;
+  const loading = Boolean(fileId) && !ready;
+  const preview = ready?.preview ?? null;
+  const fileUrl = ready?.fileUrl ?? null;
+  const error = ready?.error ?? "";
 
   if (!resource) {
     return <div className="preview-panel"><div className="preview-top"><span>资料预览</span><span className="preview-tag">预览</span></div><div className="preview-placeholder"><div className="paper-icon">▤</div><strong>选择一份资料</strong><span>原始文件、课程标签和学习状态会显示在这里。</span></div></div>;
@@ -2430,11 +2476,50 @@ function LocalResourcePreview({ resource, course }: { resource: Resource | null;
       <div className="preview-top"><span>资料预览</span><span className="preview-tag">文件</span></div>
       <div className="preview-resource-head">
         <strong>{resource.title}</strong>
-        <span>{course?.name ?? "未分类"} · {resource.type} · {resource.fileSize ? formatBytes(resource.fileSize) : "资料卡片"}</span>
+        <span>{course?.name ?? "未分类"} · {resource.type} · {resource.status}</span>
+        <small className="preview-file-meta">
+          {resource.fileName ? <>文件：{resource.fileName}</> : "（无原始文件）"}
+          {resource.fileSize ? ` · ${formatBytes(resource.fileSize)}` : ""}
+          {resource.importedAt ? ` · 入库 ${resource.importedAt}` : ""}
+        </small>
       </div>
+      {resource.fileId && fileUrl ? (
+        <div className="preview-actions">
+          <a className="quiet-button" href={fileUrl} target="_blank" rel="noreferrer">打开原文件</a>
+          <a className="quiet-button" href={fileUrl} download={resource.fileName ?? resource.title}>下载</a>
+          {onDelete ? (
+            confirmingDelete ? (
+              <>
+                <button className="quiet-button danger" onClick={() => { onDelete(resource); setConfirmingDelete(false); }}>确认删除</button>
+                <button className="text-button" onClick={() => setConfirmingDelete(false)}>取消</button>
+              </>
+            ) : (
+              <button className="text-button" onClick={() => setConfirmingDelete(true)}>删除资料</button>
+            )
+          ) : null}
+        </div>
+      ) : null}
       {loading ? <div className="preview-loading"><span className="progress-spinner" />正在生成本地预览…</div> : null}
       {error ? <div className="preview-error">{error}</div> : null}
-      {!resource.fileId ? <div className="preview-placeholder compact"><div className="paper-icon">▤</div><strong>示例资料卡片</strong><span>这条记录没有原始文件。通过智能体“＋”上传后，可在此预览。</span></div> : null}
+      {!resource.fileId ? (
+        <div className="preview-placeholder compact">
+          <div className="paper-icon">▤</div>
+          <strong>{resource.tags.includes("待整理") ? "示例资料卡片" : "这条资料没有原始文件"}</strong>
+          <span>通过输入框右侧的「＋」上传 PDF / Word / PPT / 截图后，就能在这里查看原件与正文。</span>
+          {onDelete ? (
+            confirmingDelete ? (
+              <div className="preview-actions">
+                <button className="quiet-button danger" onClick={() => { onDelete(resource); setConfirmingDelete(false); }}>确认删除</button>
+                <button className="text-button" onClick={() => setConfirmingDelete(false)}>取消</button>
+              </div>
+            ) : (
+              <div className="preview-actions">
+                <button className="text-button" onClick={() => setConfirmingDelete(true)}>删除这条资料</button>
+              </div>
+            )
+          ) : null}
+        </div>
+      ) : null}
       {preview?.kind === "image" ? <img className="image-preview" src={preview.url} alt={resource.title} /> : null}
       {preview?.kind === "pdf" ? <iframe className="pdf-preview" src={preview.url} title={resource.title} /> : null}
       {preview?.kind === "word" ? <div className="word-preview">{preview.paragraphs.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>)}</div> : null}
@@ -2608,6 +2693,11 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
 
 
 
