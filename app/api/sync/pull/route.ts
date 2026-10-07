@@ -50,6 +50,7 @@ export async function GET(request: Request) {
           status: row.status,
           importedAt: row.importedAt,
           fileName: row.fileName,
+          fileKey: row.fileKey,
           fileSize: row.fileSize,
           mimeType: row.mimeType,
           contentText: row.contentText,
@@ -106,5 +107,7 @@ function json(body: unknown, status = 200) {
     headers: { "Cache-Control": "no-store", "X-Content-Type-Options": "nosniff" },
   });
 }
+
+
 
 

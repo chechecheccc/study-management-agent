@@ -559,3 +559,8 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .preview-file-meta { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; word-break: break-all; }
 .preview-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
 .preview-actions a.quiet-button { text-decoration: none; display: inline-flex; align-items: center; }
+
+/* ---------- 侧栏课程入口（资料库合并到课程下） ---------- */
+.course-swatch.all { background: linear-gradient(135deg, var(--coral) 0%, var(--blue) 100%); }
+.course-row.active { background: rgba(255,255,255,.08); color: #fff; }
+.course-row.active span:not(.course-count) { font-weight: 700; }

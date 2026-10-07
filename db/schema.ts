@@ -8,6 +8,7 @@
 //    避免时区二次转换；服务端自己的时间（用户创建时间、会话过期）才用 timestamptz。
 import {
   boolean,
+  customType,
   index,
   integer,
   jsonb,
@@ -16,6 +17,13 @@ import {
   text,
   timestamp,
 } from "drizzle-orm/pg-core";
+
+// PostgreSQL bytea：用于存放文件二进制（服务端文件存储）
+const bytea = customType<{ data: Buffer; driverData: Buffer }>({
+  dataType() {
+    return "bytea";
+  },
+});
 
 // ---------- 账号与会话 ----------
 
@@ -74,7 +82,7 @@ export const resources = pgTable(
     status: text("status").notNull().default("未整理"),
     importedAt: text("imported_at").notNull().default(""),
     fileName: text("file_name"),
-    /** 对象存储中的文件键；文件本体不入库 */
+    /** 指向 files 表的文件 id（服务端存储的文件本体） */
     fileKey: text("file_key"),
     fileSize: integer("file_size"),
     mimeType: text("mime_type"),
@@ -142,6 +150,25 @@ export const messages = pgTable(
   ],
 );
 
+// ---------- 文件本体 ----------
+//
+// 说明：原始文件存在数据库里（bytea），这样换设备/换浏览器登录同一账号也能打开。
+// 这是"本地运行 + 单机数据库"场景下最简单可靠的方案；
+// 如果要处理大文件或多人使用，应改成对象存储（R2 / 腾讯云 COS）。
+export const files = pgTable(
+  "files",
+  {
+    id: text("id").notNull(),
+    userId: text("user_id").notNull(),
+    name: text("name").notNull().default(""),
+    mime: text("mime").notNull().default("application/octet-stream"),
+    size: integer("size").notNull().default(0),
+    data: bytea("data").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.id] })],
+);
+
 // ---------- 用户画像与长期记忆 ----------
 
 export const profiles = pgTable("profiles", {
@@ -152,4 +179,5 @@ export const profiles = pgTable("profiles", {
   notes: jsonb("notes").$type<string[]>().notNull().default([]),
   updatedAt: text("updated_at").notNull(),
 });
+
 

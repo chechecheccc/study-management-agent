@@ -18,6 +18,8 @@ export type Resource = {
   importedAt: string;
   fileName?: string;
   fileId?: string;
+  /** 服务端存储的文件 id（指向 files 表），用于跨设备打开原文件 */
+  fileKey?: string;
   fileSize?: number;
   mimeType?: string;
   /** 入库时提取的正文文本（PDF 文字层 / DOCX / PPTX / 图片识别摘要），供 Agent 检索与阅读 */
@@ -403,6 +405,7 @@ export function demoSnapshot(): AppSnapshot {
 export function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
 
 
 

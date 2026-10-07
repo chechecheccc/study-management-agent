@@ -25,7 +25,7 @@ import {
 } from "./lib/local-store";
 import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
-import { deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, touchSnapshot } from "./lib/cloud-sync";
+import { deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, serverFileUrl, touchSnapshot, uploadFileToServer } from "./lib/cloud-sync";
 import type { ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
@@ -1559,7 +1559,23 @@ export default function Home() {
         tasks: task ? [task, ...current.tasks] : current.tasks,
       }));
       updateImportQueueItem(id, (current) => ({ ...current, status: "saved", error: undefined }));
-      addAssistantMessage(`“${draft.title.trim()}”已保存到本地资料库${task ? "，关联 DDL 也已创建" : ""}。`);
+      addAssistantMessage(`“${draft.title.trim()}”已保存到本地资料库${task ? "，关联 DDL 也已创建" : ""}。正在把原文件上传到服务端…`);
+
+      // 把文件本体上传到服务端：这样换设备/换浏览器登录同一账号也能打开原文件
+      const uploaded = await uploadFileToServer(item.file, item.file.name);
+      if (uploaded.ok) {
+        setSnapshot((current) => ({
+          ...current,
+          resources: current.resources.map((entry) =>
+            entry.id === resourceId ? { ...entry, fileKey: uploaded.fileId } : entry,
+          ),
+        }));
+        updateImportQueueItem(id, (current) => ({ ...current, backupState: "done" }));
+        addAssistantMessage(`“${draft.title.trim()}”的原文件已备份到服务端，在任何设备都能打开。`);
+      } else {
+        updateImportQueueItem(id, (current) => ({ ...current, backupState: "failed", backupError: uploaded.message }));
+        addAssistantMessage(`原文件暂未上传到服务端（${uploaded.message}）—— 本机仍可正常打开。`);
+      }
     } catch {
       updateImportQueueItem(id, (current) => ({
         ...current,
@@ -1823,13 +1839,17 @@ export default function Home() {
         </div>
 
         <nav className="main-nav" aria-label="主导航">
-          {(Object.keys(viewLabels) as View[]).filter((item) => item !== "accounts" || currentUser.role === "admin").map((item) => (
+          {/* 资料库不再是独立入口：它按课程组织，入口在下方「我的课程」里 */}
+          {(Object.keys(viewLabels) as View[])
+            .filter((item) => item !== "resources")
+            .filter((item) => item !== "accounts" || currentUser.role === "admin")
+            .map((item) => (
             <button
               className={`nav-item ${view === item ? "active" : ""}`}
               key={item}
               onClick={() => setView(item)}
             >
-              <span className="nav-dot">{item === "assistant" ? "✦" : item === "resources" ? "▣" : item === "tasks" ? "◷" : item === "review" ? "✓" : item === "accounts" ? "☰" : "⚙"}</span>
+              <span className="nav-dot">{item === "assistant" ? "✦" : item === "tasks" ? "◷" : item === "review" ? "✓" : item === "accounts" ? "☰" : "⚙"}</span>
               <span>{viewLabels[item]}</span>
               {item === "tasks" && upcomingTasks.length > 0 ? <span className="nav-count">{upcomingTasks.length}</span> : null}
             </button>
@@ -1838,8 +1858,20 @@ export default function Home() {
 
         <div className="sidebar-section">
           <div className="section-label">我的课程</div>
+          <button
+            className={`course-row ${view === "resources" && !search.trim() ? "active" : ""}`}
+            onClick={() => { setSearch(""); setView("resources"); }}
+          >
+            <span className="course-swatch all" />
+            <span>全部资料</span>
+            <span className="course-count">{snapshot.resources.length}</span>
+          </button>
           {snapshot.courses.map((course) => (
-            <button className="course-row" key={course.id} onClick={() => { setSearch(course.name); setView("resources"); }}>
+            <button
+              className={`course-row ${view === "resources" && search.trim() === course.name ? "active" : ""}`}
+              key={course.id}
+              onClick={() => { setSearch(course.name); setView("resources"); }}
+            >
               <span className={`course-swatch ${course.color}`} />
               <span>{course.name}</span>
               <span className="course-count">{snapshot.resources.filter((resource) => resource.courseId === course.id).length}</span>
@@ -2463,9 +2495,16 @@ function LocalResourcePreview({ resource, course, onDelete }: { resource: Resour
 
   const ready = loaded && loaded.fileId === fileId ? loaded : null;
   const loading = Boolean(fileId) && !ready;
-  const preview = ready?.preview ?? null;
+
+  // 优先用本机原文件；本机没有但服务端有备份时，回退到服务端地址
+  const serverKey = resource?.fileKey ?? null;
+  const preview: LocalPreview | null = ready?.preview
+    ?? (serverKey && resource ? previewFromServer(serverKey, resource) : null);
   const fileUrl = ready?.fileUrl ?? null;
   const error = ready?.error ?? "";
+  const openUrl = fileUrl ?? (serverKey ? serverFileUrl(serverKey) : null);
+  const downloadUrl = serverKey ? serverFileUrl(serverKey, true) : fileUrl;
+  const hasFile = Boolean(openUrl);
 
   if (!resource) {
     return <div className="preview-panel"><div className="preview-top"><span>资料预览</span><span className="preview-tag">预览</span></div><div className="preview-placeholder"><div className="paper-icon">▤</div><strong>选择一份资料</strong><span>原始文件、课程标签和学习状态会显示在这里。</span></div></div>;
@@ -2483,10 +2522,11 @@ function LocalResourcePreview({ resource, course, onDelete }: { resource: Resour
           {resource.importedAt ? ` · 入库 ${resource.importedAt}` : ""}
         </small>
       </div>
-      {resource.fileId && fileUrl ? (
+      {hasFile ? (
         <div className="preview-actions">
-          <a className="quiet-button" href={fileUrl} target="_blank" rel="noreferrer">打开原文件</a>
-          <a className="quiet-button" href={fileUrl} download={resource.fileName ?? resource.title}>下载</a>
+          <a className="quiet-button" href={openUrl ?? "#"} target="_blank" rel="noreferrer">打开原文件</a>
+          <a className="quiet-button" href={downloadUrl ?? "#"} download={resource.fileName ?? resource.title}>下载</a>
+          {!resource.fileId && serverKey ? <span className="preview-tag">来自服务端备份</span> : null}
           {onDelete ? (
             confirmingDelete ? (
               <>
@@ -2501,7 +2541,7 @@ function LocalResourcePreview({ resource, course, onDelete }: { resource: Resour
       ) : null}
       {loading ? <div className="preview-loading"><span className="progress-spinner" />正在生成本地预览…</div> : null}
       {error ? <div className="preview-error">{error}</div> : null}
-      {!resource.fileId ? (
+      {!hasFile && !loading ? (
         <div className="preview-placeholder compact">
           <div className="paper-icon">▤</div>
           <strong>{resource.tags.includes("待整理") ? "示例资料卡片" : "这条资料没有原始文件"}</strong>
@@ -2522,6 +2562,11 @@ function LocalResourcePreview({ resource, course, onDelete }: { resource: Resour
       ) : null}
       {preview?.kind === "image" ? <img className="image-preview" src={preview.url} alt={resource.title} /> : null}
       {preview?.kind === "pdf" ? <iframe className="pdf-preview" src={preview.url} title={resource.title} /> : null}
+      {preview?.kind === "server" ? (
+        preview.render === "pdf" ? <iframe className="pdf-preview" src={preview.url} title={resource.title} />
+          : preview.render === "image" ? <img className="image-preview" src={preview.url} alt={resource.title} />
+            : <div className="preview-placeholder compact"><div className="paper-icon">▤</div><strong>已备份到服务端</strong><span>这类文件（Word / PPT）暂不支持在线渲染，可点「打开原文件」或「下载」查看。</span></div>
+      ) : null}
       {preview?.kind === "word" ? <div className="word-preview">{preview.paragraphs.map((paragraph, index) => <p key={`${index}-${paragraph.slice(0, 12)}`}>{paragraph}</p>)}</div> : null}
       {preview?.kind === "slides" ? <div className="slides-preview">{preview.slides.map((slide) => <section key={slide.number}><span>SLIDE {String(slide.number).padStart(2, "0")}</span>{slide.lines.length ? slide.lines.map((line, index) => index === 0 ? <h3 key={`${index}-${line}`}>{line}</h3> : <p key={`${index}-${line}`}>{line}</p>) : <p>空白幻灯片</p>}</section>)}</div> : null}
       {preview?.kind === "unsupported" ? <div className="preview-placeholder compact"><div className="paper-icon">!</div><strong>暂时无法渲染</strong><span>{preview.message}</span></div> : null}
@@ -2623,6 +2668,20 @@ function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, onS
   );
 }
 
+// 本机没有原文件、但服务端有备份时，用服务端地址做预览
+function previewFromServer(fileKey: string, resource: Resource): LocalPreview {
+  const url = serverFileUrl(fileKey);
+  const name = (resource.fileName ?? resource.title ?? "").toLowerCase();
+  const mime = resource.mimeType ?? "";
+  if (mime.startsWith("image/") || /\.(png|jpe?g|webp|gif)$/.test(name)) {
+    return { kind: "server", url, render: "image" };
+  }
+  if (mime === "application/pdf" || name.endsWith(".pdf")) {
+    return { kind: "server", url, render: "pdf" };
+  }
+  return { kind: "server", url, render: "other" };
+}
+
 function readAsDataUrl(file: File) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
@@ -2693,6 +2752,11 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
 
 
 

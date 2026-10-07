@@ -6,6 +6,7 @@ export type LocalPreview =
   | { kind: "pdf"; url: string }
   | { kind: "word"; paragraphs: string[] }
   | { kind: "slides"; slides: Array<{ number: number; lines: string[] }> }
+  | { kind: "server"; url: string; render: "image" | "pdf" | "other" }
   | { kind: "unsupported"; message: string };
 
 export async function buildLocalPreview(record: LocalFileRecord): Promise<LocalPreview> {
@@ -81,3 +82,4 @@ async function extractPowerPointPreview(blob: Blob): Promise<LocalPreview> {
 function slideNumber(name: string) {
   return Number(name.match(/slide(\d+)\.xml/i)?.[1] ?? 0);
 }
+

@@ -135,6 +135,32 @@ export async function pullCloud(): Promise<
   }
 }
 
+/** 把文件本体上传到服务端，返回文件 id（写入 resource.fileKey） */
+export async function uploadFileToServer(
+  file: Blob,
+  name: string,
+): Promise<{ ok: true; fileId: string } | { ok: false; message: string }> {
+  try {
+    const response = await fetch(`/api/files/upload?name=${encodeURIComponent(name)}`, {
+      method: "POST",
+      headers: { "Content-Type": file.type || "application/octet-stream" },
+      body: file,
+    });
+    const body = (await response.json()) as { ok?: boolean; fileId?: string; error?: { message?: string } };
+    if (!response.ok || !body.ok || !body.fileId) {
+      return { ok: false, message: body.error?.message ?? "文件上传失败。" };
+    }
+    return { ok: true, fileId: body.fileId };
+  } catch {
+    return { ok: false, message: "网络不可用，文件暂未上传到服务端。" };
+  }
+}
+
+/** 服务端文件的访问地址（内联预览 / 下载） */
+export function serverFileUrl(fileKey: string, download = false) {
+  return `/api/files/${encodeURIComponent(fileKey)}${download ? "?download=1" : ""}`;
+}
+
 /** 上报删除（否则下次拉取会把已删除的记录复活） */
 export async function deleteCloud(
   entity: "courses" | "resources" | "tasks" | "conversations",
@@ -171,5 +197,6 @@ export async function pushCloud(payload: SyncPayload): Promise<
     return { ok: false, message: "网络不可用，稍后会自动重试。" };
   }
 }
+
 
 
