@@ -2003,7 +2003,7 @@ export default function Home() {
 
         <div className="sidebar-section">
           <div className="section-label">我的课程</div>
-          {/* 顺序：新建课程 → 全部课程 → 具体课程（可拖拽调整） */}
+          {/* 顺序：新建课程 → 全部资料 → 具体课程（可拖拽调整） */}
           {showCourseForm ? (
             <div className="course-form">
               <input
@@ -2040,7 +2040,7 @@ export default function Home() {
             onClick={() => { setSearch(""); setView("resources"); }}
           >
             <span className="course-swatch all" />
-            <span>全部课程</span>
+            <span>全部资料</span>
             <span className="course-count">{snapshot.resources.length}</span>
           </button>
           {orderedCourses.map((course) => {

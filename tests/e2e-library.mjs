@@ -59,8 +59,8 @@ try {
   check("资料已入库", saved >= 1, `已入库=${saved}`);
 
   // 4) 到资料库查看预览与操作入口
-  // 资料库入口已合并到「我的课程」下的"全部课程"
-  await page.locator(".course-row", { hasText: "全部课程" }).click();
+  // 资料库入口已合并到「我的课程」下的"全部资料"
+  await page.locator(".course-row", { hasText: "全部资料" }).click();
   await page.waitForTimeout(1800);
   const previewText = (await page.locator(".preview-panel").textContent()) ?? "";
   check("预览区显示文件名与大小", /数据库第四章讲义\.pdf/.test(previewText), `片段：${previewText.replace(/\s+/g, " ").slice(0, 80)}`);

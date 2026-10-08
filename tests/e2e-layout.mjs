@@ -49,8 +49,8 @@ for (const vp of [{ width: 1920, height: 1080 }, { width: 1440, height: 950 }, {
   const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
   await page.goto("http://localhost:3000/", { waitUntil: "load" });
   await login(page);
-  // 资料库入口已合并到「我的课程」下的"全部课程"
-  await page.locator(".course-row", { hasText: "全部课程" }).click();
+  // 资料库入口已合并到「我的课程」下的"全部资料"
+  await page.locator(".course-row", { hasText: "全部资料" }).click();
   await page.waitForTimeout(1200);
   let scroll = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
   check("资料页无整页滚动", scroll <= 0, `滚动余量=${scroll}px`);

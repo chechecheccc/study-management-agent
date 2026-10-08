@@ -1,4 +1,4 @@
-// 验证：我的课程顺序（新建课程 → 全部课程 → 具体课程）、新建课程、拖拽排序、改资料所属课程
+// 验证：我的课程顺序（新建课程 → 全部资料 → 具体课程）、新建课程、拖拽排序、改资料所属课程
 import { createRequire } from "node:module";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
@@ -27,12 +27,12 @@ try {
   if (await skip.count()) await skip.click({ force: true, timeout: 3000 }).catch(() => {});
   await page.waitForTimeout(4000);
 
-  // 1) 侧栏顺序：新建课程 → 全部课程 → 具体课程
+  // 1) 侧栏顺序：新建课程 → 全部资料 → 具体课程
   const sectionRows = (await page.locator(".sidebar-section .course-row").allTextContents()).map((t) => t.replace(/\s+/g, " ").trim());
   const idxNew = sectionRows.findIndex((t) => t.includes("新建课程"));
-  const idxAll = sectionRows.findIndex((t) => t.includes("全部课程"));
+  const idxAll = sectionRows.findIndex((t) => t.includes("全部资料"));
   check("我的课程第一项是「新建课程」", idxNew === 0, sectionRows.join(" | ").slice(0, 120));
-  check("我的课程第二项是「全部课程」", idxAll === 1, sectionRows.join(" | ").slice(0, 120));
+  check("我的课程第二项是「全部资料」", idxAll === 1, sectionRows.join(" | ").slice(0, 120));
   check("具体课程排在聚合入口之后", idxNew === 0 && idxAll === 1 && sectionRows.length > 2, `共 ${sectionRows.length} 行`);
 
   // 2) 侧栏新建课程
@@ -45,7 +45,7 @@ try {
   check("新课程已出现在侧栏", coursesText.includes("计算机科学中的建模技术"), coursesText.replace(/\s+/g, " ").slice(0, 80));
 
   // 3) 把两份教材改挂到新课程
-  await page.locator(".course-row", { hasText: "全部课程" }).click();
+  await page.locator(".course-row", { hasText: "全部资料" }).click();
   await page.waitForTimeout(1500);
   for (const keyword of ["引言", "连续最优化"]) {
     await page.locator(".resource-item", { hasText: keyword }).first().click();
