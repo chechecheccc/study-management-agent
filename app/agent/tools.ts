@@ -122,6 +122,22 @@ export const AGENT_TOOLS: ToolSpec[] = [
     requiresConfirmation: true,
   },
   {
+    name: "create_course",
+    label: "新建课程",
+    description:
+      "新建一门课程。当用户想添加一门还没有的课程（例如导入的教材属于新课程）时调用。如果同名课程已存在则直接返回它。",
+    parameters: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "课程名称，例如「计算机科学中的建模技术」" },
+        semester: { type: "string", description: "学期，可选，例如 2026 秋季" },
+      },
+      required: ["name"],
+      additionalProperties: false,
+    },
+    requiresConfirmation: false,
+  },
+  {
     name: "read_resource",
     label: "阅读资料",
     description:
@@ -218,4 +234,5 @@ export function toolSchemasForModel() {
     },
   }));
 }
+
 

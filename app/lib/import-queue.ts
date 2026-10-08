@@ -8,6 +8,8 @@ export const MAX_IMPORT_BATCH_BYTES = 500 * 1024 * 1024;
 export type PendingResourceDraft = {
   title: string;
   courseId: string;
+  /** 选择「新建课程」时输入的新课程名 */
+  newCourseName?: string;
   type: Resource["type"];
   tags: string[];
   confidence: Confidence;
@@ -167,4 +169,5 @@ function guessCourseId(fileName: string, courses: Course[]) {
   const normalized = fileName.replace(/\s+/g, "").toLowerCase();
   return courses.find((course) => normalized.includes(course.name.replace(/\s+/g, "").toLowerCase()))?.id ?? "";
 }
+
 

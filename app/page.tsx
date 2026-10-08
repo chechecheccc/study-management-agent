@@ -170,6 +170,8 @@ export default function Home() {
   const [importQueue, setImportQueue] = useState<ImportQueueItem[]>([]);
   const [batchRunning, setBatchRunning] = useState(false);
   const [showResourceForm, setShowResourceForm] = useState(false);
+  const [showCourseForm, setShowCourseForm] = useState(false);
+  const [newCourseName, setNewCourseName] = useState("");
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [resourceTitle, setResourceTitle] = useState("");
   const [resourceCourse, setResourceCourse] = useState("");
@@ -775,6 +777,13 @@ export default function Home() {
         if (keyword) setSearch(keyword);
         setView(target as View);
         return { ok: true, summary: `已打开「${viewLabels[target as View]}」页面` };
+      }
+      case "create_course": {
+        const name = asString(args.name).trim();
+        if (!name) return { ok: false, summary: "缺少课程名称。" };
+        const courseId = createCourse(name);
+        if (!courseId) return { ok: false, summary: "课程名称不合法。" };
+        return { ok: true, summary: `已添加课程「${name}」`, data: { courseId, name } };
       }
       case "read_resource": {
         const title = asString(args.title).trim();
@@ -1632,6 +1641,37 @@ export default function Home() {
     }));
   };
 
+  // 新建课程：用于导入新课程资料、或按课程整理资料
+  const createCourse = (rawName: string): string | null => {
+    const name = rawName.replace(/\s+/g, " ").trim().slice(0, 40);
+    if (!name) return null;
+    const existing = snapshotRef.current.courses.find(
+      (course) => course.name.replace(/\s+/g, "").toLowerCase() === name.replace(/\s+/g, "").toLowerCase(),
+    );
+    if (existing) return existing.id;
+
+    const palette = ["coral", "blue", "sage", "yellow"];
+    const courseId = makeId("course");
+    const next: Course = {
+      id: courseId,
+      name,
+      semester: new Date().getFullYear() + " 秋季",
+      color: palette[snapshotRef.current.courses.length % palette.length],
+    };
+    setSnapshot((current) => ({ ...current, courses: [...current.courses, next] }));
+    return courseId;
+  };
+
+  // 修改某份资料所属课程（导入时挂错课程可就地纠正）
+  const reassignResource = (resourceId: string, courseId: string) => {
+    setSnapshot((current) => ({
+      ...current,
+      resources: current.resources.map((resource) =>
+        resource.id === resourceId ? { ...resource, courseId } : resource,
+      ),
+    }));
+  };
+
   const createResource = () => {
     if (!resourceTitle.trim() || !resourceCourse) return;
     const resource: Resource = {
@@ -1899,6 +1939,37 @@ export default function Home() {
               <span className="course-count">{snapshot.resources.filter((resource) => resource.courseId === course.id).length}</span>
             </button>
           ))}
+          {showCourseForm ? (
+            <div className="course-form">
+              <input
+                value={newCourseName}
+                onChange={(event) => setNewCourseName(event.target.value)}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter") return;
+                  const id = createCourse(newCourseName);
+                  if (id) { setNewCourseName(""); setShowCourseForm(false); setSearch(""); setView("resources"); }
+                }}
+                placeholder="新课程名称，回车保存"
+                aria-label="新课程名称"
+                autoFocus
+              />
+              <button
+                className="text-button"
+                onClick={() => {
+                  const id = createCourse(newCourseName);
+                  if (id) { setNewCourseName(""); setShowCourseForm(false); setSearch(""); setView("resources"); }
+                }}
+              >
+                保存
+              </button>
+              <button className="text-button" onClick={() => { setNewCourseName(""); setShowCourseForm(false); }}>取消</button>
+            </div>
+          ) : (
+            <button className="course-row add-course" onClick={() => setShowCourseForm(true)}>
+              <span className="course-swatch dashed" />
+              <span>新建课程</span>
+            </button>
+          )}
         </div>
 
         <div className="sidebar-user">
@@ -2009,6 +2080,7 @@ export default function Home() {
               type={resourceType}
               setType={setResourceType}
               onCreate={createResource}
+              onReassignResource={reassignResource}
             />
           ) : null}
 
@@ -2448,7 +2520,7 @@ function TaskMini({ task, course }: { task: Task; course?: Course }) {
 }
 
 function ResourcesView({
-  resources, courseMap, courses, search, onSearch, showForm, setShowForm, title, setTitle, courseId, setCourseId, type, setType, onCreate, onDeleteResource,
+  resources, courseMap, courses, search, onSearch, showForm, setShowForm, title, setTitle, courseId, setCourseId, type, setType, onCreate, onDeleteResource, onReassignResource,
 }: {
   resources: Resource[];
   onDeleteResource: (resource: Resource) => void;
@@ -2465,6 +2537,7 @@ function ResourcesView({
   type: Resource["type"];
   setType: (value: Resource["type"]) => void;
   onCreate: () => void;
+  onReassignResource: (resourceId: string, courseId: string) => void;
 }) {
   const [selectedId, setSelectedId] = useState(resources[0]?.id ?? "");
   const selectedResource = resources.find((resource) => resource.id === selectedId) ?? resources[0] ?? null;
@@ -2472,7 +2545,7 @@ function ResourcesView({
   return <div className="page-view"><PageHeader eyebrow="LIBRARY" title="课程资料库" description="让每份资料有位置，也有下一步。" action={<button className="primary-button" onClick={() => setShowForm(!showForm)}>＋ 添加资料</button>} />
     {showForm ? <div className="inline-form"><div className="form-title">新建资料卡片 <span>若要保存原文件并自动识别，请在浅浅页面点击“＋”上传</span></div><div className="form-grid"><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="资料名称" /><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value as Resource["type"])}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select><button className="primary-button" onClick={onCreate}>保存资料</button></div></div> : null}
     <div className="toolbar"><label className="local-search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索标题、课程、标签" /></label><div className="filter-chip">全部课程⌄</div><div className="filter-chip">全部状态⌄</div></div>
-    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{resources.length} 份资料 <span>· 本地索引</span></div>{resources.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{resources.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} /></div>
+    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{resources.length} 份资料 <span>· 本地索引</span></div>{resources.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{resources.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} courses={courses} onReassign={onReassignResource} /></div>
   </div>;
 }
 
@@ -2480,7 +2553,7 @@ function ResourceListItem({ resource, course, selected, onSelect }: { resource: 
   return <button className={`resource-item ${selected ? "selected" : ""}`} onClick={onSelect}><span className={`file-badge ${resource.type === "作业" ? "coral" : resource.type === "笔记" ? "blue" : ""}`}>{resource.type.slice(0, 1)}</span><span className="resource-main"><strong>{resource.title}</strong><small>{course?.name ?? "未分类"} · {resource.fileName ?? "手动资料卡片"}</small><span className="tag-line">{resource.tags.map((tag) => <em key={tag}>{tag}</em>)}</span></span><span className="resource-status">{resource.status}</span><span className="chevron">›</span></button>;
 }
 
-function LocalResourcePreview({ resource, course, onDelete }: { resource: Resource | null; course?: Course; onDelete?: (resource: Resource) => void }) {
+function LocalResourcePreview({ resource, course, courses, onDelete, onReassign }: { resource: Resource | null; course?: Course; courses?: Course[]; onDelete?: (resource: Resource) => void; onReassign?: (resourceId: string, courseId: string) => void }) {
   // 载入结果整块存在一个 state 里，避免在 effect 里同步 setState（会触发级联渲染）；
   // 是否"加载中"由 fileId 与已载入结果推导得出。
   const [loaded, setLoaded] = useState<{
@@ -2539,6 +2612,14 @@ function LocalResourcePreview({ resource, course, onDelete }: { resource: Resour
       <div className="preview-resource-head">
         <strong>{resource.title}</strong>
         <span>{course?.name ?? "未分类"} · {resource.type} · {resource.status}</span>
+        {onReassign && (courses?.length ?? 0) > 0 ? (
+          <div className="preview-reassign">
+            <span>所属课程</span>
+            <select value={resource.courseId} onChange={(event) => onReassign(resource.id, event.target.value)} aria-label="修改所属课程">
+              {(courses ?? []).map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+            </select>
+          </div>
+        ) : null}
         <small className="preview-file-meta">
           {resource.fileName ? <>文件：{resource.fileName}</> : "（无原始文件）"}
           {resource.fileSize ? ` · ${formatBytes(resource.fileSize)}` : ""}
@@ -2798,6 +2879,10 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
 
 
 

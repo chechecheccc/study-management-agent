@@ -3,6 +3,9 @@
 import type { Course, Resource, Task } from "../lib/local-store";
 import type { ImportQueueItem, PendingResourceDraft } from "../lib/import-queue";
 
+/** 与 page.tsx 保持一致：代表"新建课程"的下拉值 */
+const NEW_COURSE_VALUE = "__new_course__";
+
 const statusLabels: Record<ImportQueueItem["status"], string> = {
   queued: "排队中",
   processing: "识别中",
@@ -114,7 +117,10 @@ function ImportQueueRow({
       {item.status === "awaiting_confirmation" && draft ? (
         <div className="queue-editor">
           <label className="queue-wide"><span>资料名称</span><input value={draft.title} onChange={(event) => onResourceChange(item.id, { title: event.target.value })} /></label>
-          <label><span>课程</span><select value={draft.courseId} onChange={(event) => onResourceChange(item.id, { courseId: event.target.value })}><option value="">请选择课程</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select></label>
+          <label><span>课程</span><select value={draft.courseId} onChange={(event) => onResourceChange(item.id, { courseId: event.target.value })}><option value="">请选择课程</option>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}<option value={NEW_COURSE_VALUE}>＋ 新建课程…</option></select></label>
+          {draft.courseId === NEW_COURSE_VALUE ? (
+            <label className="queue-wide"><span>新课程名称</span><input value={draft.newCourseName ?? ""} onChange={(event) => onResourceChange(item.id, { newCourseName: event.target.value })} placeholder="例如 计算机科学中的建模技术" /></label>
+          ) : null}
           <label><span>资料类型</span><select value={draft.type} onChange={(event) => onResourceChange(item.id, { type: event.target.value as Resource["type"] })}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select></label>
           <label className="queue-wide"><span>标签（用顿号或逗号分隔）</span><input value={draft.tags.join("、")} onChange={(event) => onResourceChange(item.id, { tags: splitTags(event.target.value) })} /></label>
           <div className="queue-evidence queue-wide"><span>资料识别依据 · 置信度 {confidenceLabel(draft.confidence)}</span><p>{draft.evidence || "模型未给出明确依据"}</p></div>
@@ -162,3 +168,4 @@ function formatBytes(size: number) {
   if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
+

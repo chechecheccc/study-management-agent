@@ -1,6 +1,6 @@
 // 验证数据管理页：备份内容、文案、二次确认
 import { createRequire } from "node:module";
-import { readFileSync, rmSync } from "node:fs";
+import { readFileSync } from "node:fs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -67,3 +67,4 @@ try {
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);
+
