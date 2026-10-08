@@ -1,4 +1,4 @@
-// 验证新建课程 + 改资料所属课程（把两份教材从"数据库系统"改挂到新课程）
+// 验证：我的课程顺序（新建课程 → 全部课程 → 具体课程）、新建课程、拖拽排序、改资料所属课程
 import { createRequire } from "node:module";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
@@ -27,7 +27,15 @@ try {
   if (await skip.count()) await skip.click({ force: true, timeout: 3000 }).catch(() => {});
   await page.waitForTimeout(4000);
 
-  // 1) 侧栏新建课程
+  // 1) 侧栏顺序：新建课程 → 全部课程 → 具体课程
+  const sectionRows = (await page.locator(".sidebar-section .course-row").allTextContents()).map((t) => t.replace(/\s+/g, " ").trim());
+  const idxNew = sectionRows.findIndex((t) => t.includes("新建课程"));
+  const idxAll = sectionRows.findIndex((t) => t.includes("全部课程"));
+  check("我的课程第一项是「新建课程」", idxNew === 0, sectionRows.join(" | ").slice(0, 120));
+  check("我的课程第二项是「全部课程」", idxAll === 1, sectionRows.join(" | ").slice(0, 120));
+  check("具体课程排在聚合入口之后", idxNew === 0 && idxAll === 1 && sectionRows.length > 2, `共 ${sectionRows.length} 行`);
+
+  // 2) 侧栏新建课程
   check("侧栏有「新建课程」入口", await page.locator(".course-row", { hasText: "新建课程" }).isVisible().catch(() => false));
   await page.locator(".course-row", { hasText: "新建课程" }).click();
   await page.locator('input[aria-label="新课程名称"]').fill("计算机科学中的建模技术");
@@ -36,8 +44,8 @@ try {
   const coursesText = (await page.locator(".sidebar-section").textContent()) ?? "";
   check("新课程已出现在侧栏", coursesText.includes("计算机科学中的建模技术"), coursesText.replace(/\s+/g, " ").slice(0, 80));
 
-  // 2) 把两份教材改挂到新课程
-  await page.locator(".course-row", { hasText: "全部资料" }).click();
+  // 3) 把两份教材改挂到新课程
+  await page.locator(".course-row", { hasText: "全部课程" }).click();
   await page.waitForTimeout(1500);
   for (const keyword of ["引言", "连续最优化"]) {
     await page.locator(".resource-item", { hasText: keyword }).first().click();
@@ -50,7 +58,7 @@ try {
     }
   }
 
-  // 3) 侧栏计数应变化：新课程 2 份，数据库系统从 5 降到 3
+  // 4) 侧栏计数应变化：新课程 2 份，数据库系统从 5 降到 3
   await page.waitForTimeout(2000);
   const rows = await page.locator(".course-row").allTextContents();
   const newCourseRow = rows.find((t) => t.includes("计算机科学中的建模技术")) ?? "";
@@ -58,11 +66,82 @@ try {
   check("新课程计数为 2", /2/.test(newCourseRow), `行内容=${newCourseRow.replace(/\s+/g, " ")}`);
   check("数据库系统计数已减少", /3/.test(dbRow), `行内容=${dbRow.replace(/\s+/g, " ")}`);
 
-  // 4) 点新课程应只显示这 2 份教材
+  // 5) 点新课程应只显示这 2 份教材
   await page.locator(".course-row", { hasText: "计算机科学中的建模技术" }).click();
   await page.waitForTimeout(1800);
   const meta = (await page.locator(".list-meta").textContent()) ?? "";
   check("按新课程筛选出 2 份资料", /2\s*份资料/.test(meta), meta.replace(/\s+/g, " ").slice(0, 40));
+
+  // 6) 拖拽排序：整行可拖，拖完立即改顺序，刷新后保持
+  const courseNames = () => page.evaluate(() =>
+    [...document.querySelectorAll(".course-row.course-draggable")].map((row) => (row.querySelector(".course-name")?.textContent ?? "").trim()));
+  const dragCourse = (from, to) => page.evaluate(([fromName, toName]) => {
+    const rows = [...document.querySelectorAll(".course-row.course-draggable")];
+    const nameOf = (row) => (row.querySelector(".course-name")?.textContent ?? "").trim();
+    const src = rows.find((row) => nameOf(row) === fromName);
+    const dst = rows.find((row) => nameOf(row) === toName);
+    if (!src || !dst) throw new Error("找不到课程行：" + fromName + " / " + toName);
+    const dataTransfer = new DataTransfer();
+    src.dispatchEvent(new DragEvent("dragstart", { bubbles: true, dataTransfer }));
+    dst.dispatchEvent(new DragEvent("dragover", { bubbles: true, cancelable: true, dataTransfer }));
+    dst.dispatchEvent(new DragEvent("drop", { bubbles: true, cancelable: true, dataTransfer }));
+    src.dispatchEvent(new DragEvent("dragend", { bubbles: true, dataTransfer }));
+  }, [from, to]);
+
+  const draggableRows = await page.locator(".course-row.course-draggable").count();
+  check("课程行数量 >= 3", draggableRows >= 3, `共 ${draggableRows} 行`);
+  check("课程行带 draggable 属性", await page.evaluate(() =>
+    [...document.querySelectorAll(".course-row.course-draggable")].every((row) => row.draggable === true)));
+  check("课程行有拖拽手柄", await page.evaluate(() =>
+    [...document.querySelectorAll(".course-row.course-draggable")].every((row) => Boolean(row.querySelector(".course-handle")))));
+
+  const before = await courseNames();
+  const movedName = before[1];
+  const targetName = before[0];
+  await dragCourse(movedName, targetName);
+  await page.waitForTimeout(1200);
+  const after = await courseNames();
+  check("拖拽后顺序立即变化", after[0] === movedName && after[1] === targetName, `${before.join(" > ")} → ${after.join(" > ")}`);
+
+  await page.reload({ waitUntil: "load" });
+  await page.waitForTimeout(4000);
+  const persisted = await courseNames();
+  check("刷新后顺序保持", persisted[0] === movedName && persisted[1] === targetName, persisted.join(" > "));
+
+  // 7) 编辑类改动（改归属、改顺序）必须能同步到云端：换一台"设备"登录同一账号应看到同样的结果
+  await page.waitForTimeout(6000);
+  const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 860 } });
+  try {
+    const page2 = await ctx2.newPage();
+    page2.setDefaultTimeout(45000);
+    await page2.goto("http://localhost:3000/", { waitUntil: "load" });
+    await page2.waitForTimeout(3000);
+    const u2 = page2.locator('input[aria-label="用户名"]');
+    if (await u2.isVisible().catch(() => false)) {
+      await u2.fill("admin");
+      await page2.locator('input[aria-label="密码"]').fill("admin123");
+      await page2.getByRole("button", { name: /^登录$/ }).click();
+    }
+    await page2.locator(".main-nav").waitFor({ state: "visible", timeout: 25000 });
+    await page2.waitForTimeout(5000);
+    const skip2 = page2.locator(".intro-skip");
+    if (await skip2.count()) await skip2.click({ force: true, timeout: 3000 }).catch(() => {});
+    const names2 = await page2.evaluate(() =>
+      [...document.querySelectorAll(".course-row.course-draggable")].map((row) => (row.querySelector(".course-name")?.textContent ?? "").trim()));
+    check("换设备登录后课程顺序一致", names2[0] === movedName && names2[1] === targetName, names2.join(" > "));
+
+    await page2.locator(".course-row", { hasText: "计算机科学中的建模技术" }).click();
+    await page2.waitForTimeout(2500);
+    const meta2 = (await page2.locator(".list-meta").textContent()) ?? "";
+    check("换设备登录后资料归属已同步", /2\s*份资料/.test(meta2), meta2.replace(/\s+/g, " ").slice(0, 40));
+    await page2.screenshot({ path: new URL("../.e2e/course-device2.png", import.meta.url).pathname.slice(1) });
+  } finally {
+    await ctx2.close();
+  }
+
+  // 收尾：把顺序改回原样，并等自动同步把"改回后"的顺序推上去，避免留下半截状态
+  await dragCourse(movedName, targetName);
+  await page.waitForTimeout(6000);
 
   await page.screenshot({ path: new URL("../.e2e/course-new.png", import.meta.url).pathname.slice(1) });
 } catch (error) {

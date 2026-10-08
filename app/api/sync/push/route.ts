@@ -42,6 +42,7 @@ export async function POST(request: Request) {
         semester: String(item.semester ?? ""),
         color: String(item.color ?? "coral"),
         archived: Boolean(item.archived),
+        sortOrder: Number.isFinite(Number(item.order)) ? Number(item.order) : 0,
         updatedAt: String(item.updatedAt ?? now),
         deletedAt: (item.deletedAt as string | null) ?? null,
       };

@@ -64,6 +64,8 @@ export const courses = pgTable(
     semester: text("semester").notNull().default(""),
     color: text("color").notNull().default("coral"),
     archived: boolean("archived").notNull().default(false),
+    /** 侧栏显示顺序（用户拖拽调整，参与云同步） */
+    sortOrder: integer("sort_order").notNull().default(0),
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
   },
@@ -179,5 +181,6 @@ export const profiles = pgTable("profiles", {
   notes: jsonb("notes").$type<string[]>().notNull().default([]),
   updatedAt: text("updated_at").notNull(),
 });
+
 
 

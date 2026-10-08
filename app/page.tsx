@@ -17,11 +17,14 @@ import {
   loadChatLog,
   loadConversations,
   loadSnapshot,
+  moveCourse,
+  normalizeCourseOrder,
   saveConversation,
   makeId,
   saveLocalFile,
   saveSnapshot,
   setDataScope,
+  sortCourses,
 } from "./lib/local-store";
 import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
@@ -173,6 +176,9 @@ export default function Home() {
   const [showResourceForm, setShowResourceForm] = useState(false);
   const [showCourseForm, setShowCourseForm] = useState(false);
   const [newCourseName, setNewCourseName] = useState("");
+  // 侧栏课程拖拽排序
+  const [draggingCourseId, setDraggingCourseId] = useState<string | null>(null);
+  const [dragOverCourseId, setDragOverCourseId] = useState<string | null>(null);
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [resourceTitle, setResourceTitle] = useState("");
   const [resourceCourse, setResourceCourse] = useState("");
@@ -206,6 +212,8 @@ export default function Home() {
   const importAbortControllersRef = useRef(new Map<string, AbortController>());
   const savingImportIdsRef = useRef(new Set<string>());
   const snapshotRef = useRef(snapshot);
+  // 上一次做过 updatedAt 打标的快照：用来判断"这一轮到底改了哪几条记录"
+  const syncedSnapshotRef = useRef<AppSnapshot>(emptySnapshot());
   const conversationsRef = useRef(conversations);
   const profileRef = useRef(profile);
 
@@ -355,7 +363,9 @@ export default function Home() {
     setSyncState(cloudOk ? "idle" : "offline");
     if (!cloudOk) setSyncMessage("离线模式：数据保存在本机，联网后会自动同步。");
 
-    const next = merged.courses.length ? merged : demoSnapshot();
+    const next = merged.courses.length ? { ...merged, courses: normalizeCourseOrder(merged.courses) } : demoSnapshot();
+    // 登录/合并后的这一份就是"已知最新"，不要给它打新时间戳，否则会把其它设备刚改的数据顶掉
+    syncedSnapshotRef.current = next;
     setSnapshot(next);
     if (!stored.courses.length) void saveSnapshot(next);
 
@@ -551,7 +561,8 @@ export default function Home() {
 
   useEffect(() => {
     if (ready && currentUser) {
-      const stamped = touchSnapshot(snapshotRef.current, snapshot);
+      const stamped = touchSnapshot(syncedSnapshotRef.current, snapshot);
+      syncedSnapshotRef.current = stamped;
       // 没有变化时 touchSnapshot 会返回原对象，这里就什么都不做，避免无限渲染
       if (stamped === snapshot) {
         saveSnapshot(snapshot);
@@ -627,6 +638,9 @@ export default function Home() {
     () => new Map(snapshot.courses.map((course) => [course.id, course])),
     [snapshot.courses],
   );
+
+  // 侧栏课程按用户拖拽后的顺序展示
+  const orderedCourses = useMemo(() => sortCourses(snapshot.courses), [snapshot.courses]);
 
   const filteredResources = useMemo(() => {
     const keyword = search.trim().toLowerCase();
@@ -1676,6 +1690,13 @@ export default function Home() {
     }));
   };
 
+  // 课程顺序是一整组数据：只把变动的那两门课写回云端，云端那些还是旧值的课程会跟新值撞号，
+  // 别的设备拉下来顺序就乱了。所以顺序一变就给整组课程盖同一个时间戳，整组上传。
+  const touchCourseList = (courses: Course[]): Course[] => {
+    const now = new Date().toISOString();
+    return courses.map((course) => ({ ...course, updatedAt: now }));
+  };
+
   // 新建课程：用于导入新课程资料、或按课程整理资料
   const createCourse = (rawName: string): string | null => {
     const name = rawName.replace(/\s+/g, " ").trim().slice(0, 40);
@@ -1687,14 +1708,31 @@ export default function Home() {
 
     const palette = ["coral", "blue", "sage", "yellow"];
     const courseId = makeId("course");
+    const existingCourses = snapshotRef.current.courses;
+    const nextOrder = existingCourses.reduce((max, course) => Math.max(max, course.order ?? -1), -1) + 1;
     const next: Course = {
       id: courseId,
       name,
       semester: new Date().getFullYear() + " 秋季",
-      color: palette[snapshotRef.current.courses.length % palette.length],
+      color: palette[existingCourses.length % palette.length],
+      order: nextOrder,
     };
-    setSnapshot((current) => ({ ...current, courses: [...current.courses, next] }));
+    setSnapshot((current) => ({ ...current, courses: touchCourseList([...current.courses, next]) }));
     return courseId;
+  };
+
+  // 侧栏拖拽：把一门课放到另一门课的位置，并把顺序写回 order（参与云同步）
+  const dropCourse = (sourceId: string, targetId: string) => {
+    setSnapshot((current) => {
+      const courses = moveCourse(current.courses, sourceId, targetId);
+      if (courses === current.courses) return current;
+      return { ...current, courses: touchCourseList(courses) };
+    });
+  };
+
+  const clearCourseDrag = () => {
+    setDraggingCourseId(null);
+    setDragOverCourseId(null);
   };
 
   // 修改某份资料所属课程（导入时挂错课程可就地纠正）
@@ -1771,7 +1809,13 @@ export default function Home() {
         if (!Array.isArray(imported.courses) || !Array.isArray(imported.resources) || !Array.isArray(imported.tasks)) {
           throw new Error("invalid backup");
         }
-        setSnapshot({ courses: imported.courses, resources: imported.resources, tasks: imported.tasks });
+        const importedSnapshot = {
+          courses: normalizeCourseOrder(imported.courses),
+          resources: imported.resources,
+          tasks: imported.tasks,
+        };
+        syncedSnapshotRef.current = importedSnapshot;
+        setSnapshot(importedSnapshot);
         if (imported.profile) {
           const nextProfile = sanitizeProfile(imported.profile);
           setProfile(nextProfile);
@@ -1800,6 +1844,7 @@ export default function Home() {
 
   const resetDemo = () => {
     const next = demoSnapshot();
+    syncedSnapshotRef.current = next;
     setSnapshot(next);
     addAssistantMessage("示例数据已恢复。你可以在此基础上继续添加自己的课程、资料和任务。");
   };
@@ -1958,25 +2003,7 @@ export default function Home() {
 
         <div className="sidebar-section">
           <div className="section-label">我的课程</div>
-          <button
-            className={`course-row ${view === "resources" && !search.trim() ? "active" : ""}`}
-            onClick={() => { setSearch(""); setView("resources"); }}
-          >
-            <span className="course-swatch all" />
-            <span>全部资料</span>
-            <span className="course-count">{snapshot.resources.length}</span>
-          </button>
-          {snapshot.courses.map((course) => (
-            <button
-              className={`course-row ${view === "resources" && search.trim() === course.name ? "active" : ""}`}
-              key={course.id}
-              onClick={() => { setSearch(course.name); setView("resources"); }}
-            >
-              <span className={`course-swatch ${course.color}`} />
-              <span>{course.name}</span>
-              <span className="course-count">{snapshot.resources.filter((resource) => resource.courseId === course.id).length}</span>
-            </button>
-          ))}
+          {/* 顺序：新建课程 → 全部课程 → 具体课程（可拖拽调整） */}
           {showCourseForm ? (
             <div className="course-form">
               <input
@@ -2008,6 +2035,51 @@ export default function Home() {
               <span>新建课程</span>
             </button>
           )}
+          <button
+            className={`course-row ${view === "resources" && !search.trim() ? "active" : ""}`}
+            onClick={() => { setSearch(""); setView("resources"); }}
+          >
+            <span className="course-swatch all" />
+            <span>全部课程</span>
+            <span className="course-count">{snapshot.resources.length}</span>
+          </button>
+          {orderedCourses.map((course) => {
+            const dragging = draggingCourseId === course.id;
+            const dragOver = dragOverCourseId === course.id && !dragging;
+            return (
+              <button
+                className={`course-row course-draggable ${view === "resources" && search.trim() === course.name ? "active" : ""} ${dragging ? "dragging" : ""} ${dragOver ? "drag-over" : ""}`}
+                key={course.id}
+                draggable
+                title="按住拖动可调整课程顺序"
+                onDragStart={(event) => {
+                  setDraggingCourseId(course.id);
+                  event.dataTransfer.effectAllowed = "move";
+                  try { event.dataTransfer.setData("text/plain", course.id); } catch { /* 部分浏览器不允许写入 */ }
+                }}
+                onDragOver={(event) => {
+                  if (!draggingCourseId || draggingCourseId === course.id) return;
+                  event.preventDefault();
+                  event.dataTransfer.dropEffect = "move";
+                  setDragOverCourseId(course.id);
+                }}
+                onDragLeave={() => setDragOverCourseId((current) => (current === course.id ? null : current))}
+                onDrop={(event) => {
+                  event.preventDefault();
+                  const sourceId = draggingCourseId ?? event.dataTransfer.getData("text/plain");
+                  if (sourceId) dropCourse(sourceId, course.id);
+                  clearCourseDrag();
+                }}
+                onDragEnd={clearCourseDrag}
+                onClick={() => { setSearch(course.name); setView("resources"); }}
+              >
+                <span className={`course-swatch ${course.color}`} />
+                <span className="course-name">{course.name}</span>
+                <span className="course-count">{snapshot.resources.filter((resource) => resource.courseId === course.id).length}</span>
+                <span className="course-handle" aria-hidden="true">⠿</span>
+              </button>
+            );
+          })}
         </div>
 
         <div className="sidebar-user">

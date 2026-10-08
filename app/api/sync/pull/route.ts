@@ -11,7 +11,7 @@ export async function GET(request: Request) {
   try {
     const { courseRows, resourceRows, taskRows, conversationRows, messageRows, profileRows } = await withPg(async (db) => {
       const [courseRows, resourceRows, taskRows, conversationRows, messageRows, profileRows] = await Promise.all([
-        db.select().from(courses).where(eq(courses.userId, user.id)),
+        db.select().from(courses).where(eq(courses.userId, user.id)).orderBy(courses.sortOrder),
         db.select().from(resources).where(eq(resources.userId, user.id)),
         db.select().from(tasks).where(eq(tasks.userId, user.id)),
         db.select().from(conversations).where(eq(conversations.userId, user.id)).orderBy(desc(conversations.updatedAt)),
@@ -38,6 +38,7 @@ export async function GET(request: Request) {
           semester: row.semester,
           color: row.color,
           archived: row.archived,
+          order: row.sortOrder,
           updatedAt: row.updatedAt,
           deletedAt: row.deletedAt,
         })),

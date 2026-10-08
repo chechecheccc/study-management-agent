@@ -4,6 +4,8 @@ export type Course = {
   semester: string;
   color: string;
   archived?: boolean;
+  /** 侧栏显示顺序（用户可拖拽调整，参与云同步） */
+  order?: number;
   /** 最后修改时间（云同步合并依据，由本地自动打标） */
   updatedAt?: string;
 };
@@ -316,6 +318,37 @@ export async function saveChatLog(records: ChatLogRecord[]) {
   }
 }
 
+/** 按用户设定的顺序排列课程（order 缺省视为 0，保持原相对顺序） */
+export function sortCourses(courses: Course[]): Course[] {
+  return [...courses].sort((a, b) => (a.order ?? 0) - (b.order ?? 0));
+}
+
+/**
+ * 归一化课程顺序：先按 order 排好，再重新编号 0..n-1。
+ * 旧数据没有 order 时按当前数组顺序补上；顺序本来就规整时返回原数组，避免无谓的状态更新。
+ */
+export function normalizeCourseOrder(courses: Course[]): Course[] {
+  const tidy = sortCourses(courses).map((course, index) =>
+    course.order === index ? course : { ...course, order: index },
+  );
+  const unchanged = tidy.length === courses.length && tidy.every((course, index) => course === courses[index]);
+  return unchanged ? courses : tidy;
+}
+
+/** 把 sourceId 课程移动到 targetId 课程的位置，返回已重新编号的课程数组；没有变化时返回原数组 */
+export function moveCourse(courses: Course[], sourceId: string, targetId: string): Course[] {
+  const ordered = sortCourses(courses);
+  const from = ordered.findIndex((course) => course.id === sourceId);
+  const to = ordered.findIndex((course) => course.id === targetId);
+  if (from < 0 || to < 0 || from === to) return courses;
+  const next = [...ordered];
+  const [moved] = next.splice(from, 1);
+  next.splice(to, 0, moved);
+  const tidy = next.map((course, index) => (course.order === index ? course : { ...course, order: index }));
+  const unchanged = tidy.every((course, index) => course === courses[index]);
+  return unchanged ? courses : tidy;
+}
+
 export function emptySnapshot(): AppSnapshot {
   return { courses: [], resources: [], tasks: [] };
 }
@@ -323,9 +356,9 @@ export function emptySnapshot(): AppSnapshot {
 export function demoSnapshot(): AppSnapshot {
   return {
     courses: [
-      { id: "course-db", name: "数据库系统", semester: "2026 秋季", color: "coral" },
-      { id: "course-calc", name: "高等数学", semester: "2026 秋季", color: "blue" },
-      { id: "course-english", name: "学术英语", semester: "2026 秋季", color: "sage" },
+      { id: "course-db", name: "数据库系统", semester: "2026 秋季", color: "coral", order: 0 },
+      { id: "course-calc", name: "高等数学", semester: "2026 秋季", color: "blue", order: 1 },
+      { id: "course-english", name: "学术英语", semester: "2026 秋季", color: "sage", order: 2 },
     ],
     resources: [
       {
@@ -407,6 +440,7 @@ export function demoSnapshot(): AppSnapshot {
 export function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
 
 
 

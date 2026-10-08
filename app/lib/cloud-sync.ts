@@ -32,7 +32,8 @@ export function touchList<T extends Syncable>(prev: T[], next: T[], now: string)
   return next.map((item) => {
     const before = prevById.get(item.id);
     if (before && sameRecord(before, item)) return item;
-    return { ...item, updatedAt: item.updatedAt ?? now };
+    // 有改动就盖新的 updatedAt：否则"改归属/改名/改顺序"这类编辑永远比云端旧，推送会被判定为过期而丢弃。
+    return { ...item, updatedAt: now };
   });
 }
 
