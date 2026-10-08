@@ -123,6 +123,30 @@ function saveStore(
   records.forEach((record) => store.put(record));
 }
 
+// 预设资料的"删除记忆"：用户主动删掉后，同一个账号不再自动补回来。
+const PRESET_HIDE_KEY = "study-agent-hidden-presets";
+
+export function loadHiddenPresets(): string[] {
+  if (typeof window === "undefined") return [];
+  try {
+    const raw = window.localStorage.getItem(scopedKey(PRESET_HIDE_KEY));
+    const parsed = raw ? (JSON.parse(raw) as unknown) : [];
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export function hidePreset(id: string) {
+  if (typeof window === "undefined") return;
+  try {
+    const next = [...new Set([...loadHiddenPresets(), id])].slice(-200);
+    window.localStorage.setItem(scopedKey(PRESET_HIDE_KEY), JSON.stringify(next));
+  } catch {
+    // 写不进去也不影响主流程：最坏情况是下次登录预设资料再出现一次
+  }
+}
+
 export async function loadSnapshot(): Promise<AppSnapshot> {
   if (typeof window === "undefined" || typeof indexedDB === "undefined") {
     return emptySnapshot();

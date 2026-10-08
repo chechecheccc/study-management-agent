@@ -16,11 +16,13 @@ import {
   deleteLocalFile,
   loadChatLog,
   loadConversations,
+  loadHiddenPresets,
   loadSnapshot,
   moveCourse,
   normalizeCourseOrder,
   saveConversation,
   makeId,
+  hidePreset,
   saveLocalFile,
   saveSnapshot,
   setDataScope,
@@ -45,6 +47,7 @@ import { BatchImportQueue } from "./components/import-queue";
 import { StudyIntro } from "./components/study-intro";
 import { LoginScreen } from "./components/login-screen";
 import { AccountPanel } from "./components/account-panel";
+import { applyPresets, isPresetResourceId } from "./lib/presets";
 
 import type { PublicAccount } from "./lib/accounts";
 
@@ -366,8 +369,11 @@ export default function Home() {
     const next = merged.courses.length ? { ...merged, courses: normalizeCourseOrder(merged.courses) } : demoSnapshot();
     // 登录/合并后的这一份就是"已知最新"，不要给它打新时间戳，否则会把其它设备刚改的数据顶掉
     syncedSnapshotRef.current = next;
-    setSnapshot(next);
-    if (!stored.courses.length) void saveSnapshot(next);
+    // 预设课程与预设课件：每个账号都补一份（用户删过的除外）。
+    // 基准留在 next 上，这样新补进来的预设会被正常打上时间戳并同步到云端。
+    const withPresets = applyPresets(next, loadHiddenPresets());
+    setSnapshot(withPresets);
+    if (!stored.courses.length) void saveSnapshot(withPresets);
 
     // 兼容旧数据：此前只有一条全局聊天记录，首次升级时迁移成一个会话
     let conversationList = savedConversations;
@@ -400,8 +406,8 @@ export default function Home() {
     setPendingTaskConfirm(null);
     setTaskConfirmDraft(null);
     setPendingPlanConfirm(null);
-    setResourceCourse(next.courses[0]?.id ?? "");
-    setTaskCourse(next.courses[0]?.id ?? "");
+    setResourceCourse(withPresets.courses[0]?.id ?? "");
+    setTaskCourse(withPresets.courses[0]?.id ?? "");
     setView("assistant");
     setReady(true);
   };
@@ -1815,7 +1821,8 @@ export default function Home() {
           tasks: imported.tasks,
         };
         syncedSnapshotRef.current = importedSnapshot;
-        setSnapshot(importedSnapshot);
+        const withPresets = applyPresets(importedSnapshot, loadHiddenPresets());
+        setSnapshot(withPresets);
         if (imported.profile) {
           const nextProfile = sanitizeProfile(imported.profile);
           setProfile(nextProfile);
@@ -1845,7 +1852,7 @@ export default function Home() {
   const resetDemo = () => {
     const next = demoSnapshot();
     syncedSnapshotRef.current = next;
-    setSnapshot(next);
+    setSnapshot(applyPresets(next, loadHiddenPresets()));
     addAssistantMessage("示例数据已恢复。你可以在此基础上继续添加自己的课程、资料和任务。");
   };
 
@@ -1923,6 +1930,8 @@ export default function Home() {
 
   // 删除资料：本地移除 + 删除原文件 + 上报云端（否则刷新会被同步回来）
   const deleteResource = async (resource: Resource) => {
+    // 预设资料删掉后记一笔，避免下次登录又被补回来
+    if (isPresetResourceId(resource.id)) hidePreset(resource.id);
     setSnapshot((current) => {
       const next = { ...current, resources: current.resources.filter((item) => item.id !== resource.id) };
       snapshotRef.current = next;

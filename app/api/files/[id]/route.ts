@@ -1,10 +1,11 @@
 // 下载/预览服务端保存的文件本体
 // GET /api/files/<fileId>            内联预览
 // GET /api/files/<fileId>?download=1 作为附件下载
-import { and, eq } from "drizzle-orm";
+import { and, eq, or } from "drizzle-orm";
 import { withPg } from "../../../../db/pg";
 import { files } from "../../../../db/schema";
 import { getSessionUser } from "../../../lib/server-auth";
+import { PRESET_FILE_SCOPE } from "../../../lib/presets";
 
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser(request);
@@ -20,7 +21,8 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
       const rows = await db
         .select()
         .from(files)
-        .where(and(eq(files.userId, user.id), eq(files.id, id)))
+        // 自己的文件，或所有账号共用的预设课件
+        .where(and(eq(files.id, id), or(eq(files.userId, user.id), eq(files.userId, PRESET_FILE_SCOPE))))
         .limit(1);
       return rows[0] ?? null;
     });

@@ -30,6 +30,7 @@
 - PDF 提取：普通 PDF 在浏览器本地提取正文；扫描 PDF 渲染前最多 3 页交给视觉模型识别。
 - 本地保存：课程、资料、任务和原始文件保存到浏览器 IndexedDB。
 - 文件预览：支持图片、PDF、DOCX 正文和 PPTX 按页文字预览。
+- 预设课程：每个账号自动带一门「机器学习」课程与两份预设课件（PDF 原件在服务端只存一份，全账号共用）。
 - 本地备份：支持下载和恢复课程、资料、任务 JSON 快照。
 - 动效体验：使用 GSAP 实现全屏片头、页面展示和按钮交互动画，并支持减少动态效果。
 
@@ -198,7 +199,8 @@ npx next build       # 按 EdgeOne 当前方式验证 Next 构建
 npm run start        # 启动生产服务
 npm run lint         # ESLint 检查
 npm test             # 生产构建并运行自动化测试
-npm run db:generate  # 生成 Drizzle 迁移，目前 schema 为空
+npm run db:generate  # 生成 Drizzle 迁移
+npm run db:seed:presets  # 把两份预设课件 PDF 写进数据库（默认读桌面上的两份教材）
 ```
 
 ## EdgeOne 部署建议

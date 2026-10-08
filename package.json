@@ -13,7 +13,8 @@
     "test:agent": "node --experimental-strip-types tests/agent-core.test.mjs",
     "eval:agent": "node tests/agent-eval.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "db:seed:presets": "node scripts/seed-preset-courseware.mjs"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",
