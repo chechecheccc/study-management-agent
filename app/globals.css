@@ -573,3 +573,30 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 @media (max-width: 720px) {
   .data-stats, .primary-data .data-stats { grid-template-columns: repeat(2, 1fr); }
 }
+
+/* ---------- 任务中心：分组 / 筛选 / 行内编辑 ---------- */
+.task-summary { display: flex; align-items: center; gap: 10px; margin: -12px 0 18px; flex-wrap: wrap; }
+.task-summary-chip { border-radius: 999px; padding: 5px 12px; font-size: 11px; font-weight: 800; }
+.task-summary-chip.overdue { background: #fae7e1; color: #975348; }
+.task-summary-chip.today { background: #eef4ea; color: #4f6b4c; }
+.task-toolbar { margin-bottom: 18px; }
+.task-toolbar select { border: 1px solid var(--line); border-radius: 9px; background: #fff; padding: 8px 10px; font-size: 12px; color: var(--ink); }
+.list-meta-inline { margin-left: auto; color: var(--muted); font-size: 11px; }
+.task-group { margin-bottom: 22px; }
+.task-group-label { margin-bottom: 8px; color: var(--muted); font-size: 11px; font-weight: 800; letter-spacing: .04em; text-transform: uppercase; }
+.task-group-label.overdue { color: var(--coral-dark); }
+.task-row.overdue { background: #fffaf8; }
+.task-row time.overdue { color: var(--coral-dark); font-weight: 700; }
+.status-pill.overdue { background: #fae7e1; color: #975348; }
+.task-marker.overdue { background: var(--coral); }
+.task-row-actions { display: flex; align-items: center; gap: 8px; margin-left: auto; flex-wrap: wrap; }
+.task-edit-grid { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 8px; flex: 1; }
+.task-edit-grid input, .task-edit-grid select { border: 1px solid var(--line); border-radius: 8px; padding: 7px 9px; font-size: 12px; background: #fff; }
+.task-edit-actions { display: flex; gap: 8px; align-items: center; }
+.reminder-choices { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 10px; font-size: 11px; color: var(--muted); }
+.reminder-choices label { display: inline-flex; align-items: center; gap: 5px; border: 1px solid var(--line); border-radius: 999px; padding: 5px 11px; cursor: pointer; background: #fff; }
+.reminder-choices label.on { border-color: #cfdcc9; background: #eef4ea; color: #4f6b4c; font-weight: 700; }
+.text-button.inline { display: inline; padding: 0; font-size: inherit; color: var(--coral-dark); }
+@media (max-width: 720px) { .task-edit-grid { grid-template-columns: 1fr; } }
+
+.task-edit-reminders { grid-column: 1 / -1; margin-top: 0; }

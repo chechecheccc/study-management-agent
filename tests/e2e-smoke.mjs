@@ -11,6 +11,12 @@ const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
 const SHOTS = new URL("../.e2e/", import.meta.url);
 await mkdir(SHOTS, { recursive: true });
 
+const RUN_ID = Date.now().toString(36).slice(-5);
+const TASK_MARK = `实验报告${RUN_ID.toUpperCase()}`;
+// 每次运行使用全新账号，避免历史对话与任务累积导致断言失真
+const E2E_USER = `smoke${RUN_ID}`;
+const E2E_PASS = "smoke123456";
+let registered = false;
 const results = [];
 const check = (name, ok, detail = "") => {
   results.push({ name, ok, detail });
@@ -54,13 +60,25 @@ try {
   // 账号系统：先用预置的管理员账号登录
   const userField = page.locator('input[aria-label="用户名"]');
   if (await userField.isVisible().catch(() => false)) {
-    await userField.fill("admin");
-    await page.locator('input[aria-label="密码"]').fill("admin123");
-    await page.getByRole("button", { name: /^登录$/ }).click();
-    await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      if (!registered) {
+        await page.getByRole("tab", { name: "注册" }).click();
+        await userField.fill(E2E_USER);
+        await page.locator('input[aria-label="显示名称"]').fill("冒烟测试");
+        await page.locator('input[aria-label="密码"]').fill(E2E_PASS);
+        await page.getByRole("button", { name: /注册并进入/ }).click();
+        registered = true;
+      } else {
+        await userField.fill(E2E_USER);
+        await page.locator('input[aria-label="密码"]').fill(E2E_PASS);
+        await page.getByRole("button", { name: /^登录$/ }).click();
+      }
+      const entered = await page.locator(".main-nav").waitFor({ state: "visible", timeout: 25000 }).then(() => true).catch(() => false);
+      if (entered) break;
+      await page.waitForTimeout(1500);
+    }
     await page.waitForTimeout(1200);
   }
-
   await dismissIntro();
   check("页面加载并进入主界面", await page.locator(".brand-name").isVisible());
   const idle = await waitIdle();
@@ -85,69 +103,55 @@ try {
   check("对话展示工具轨迹", steps.length > 0, `轨迹：${steps.join(" / ")}`);
   await shot("02-chat-query");
 
-  // 3. 写入流程：创建任务 + 确认卡片
+  // 3. 写入流程：创建任务 → 确认卡片 →（跨视图验证）→ 确认入库
   await waitIdle();
-  await composer.fill("帮我记下：数据库系统 后天晚上 8 点交实验报告");
+  await composer.fill(`帮我记下：数据库系统 后天晚上 8 点交${TASK_MARK}`);
   await composer.press("Enter");
-  const card = page.locator(".action-card").first();
+  const card = page.locator(".inline-confirm").first();
   const cardAppeared = await card.waitFor({ state: "visible", timeout: 90000 }).then(() => true).catch(() => false);
   check("创建任务弹出确认卡片", cardAppeared);
+
   if (cardAppeared) {
     await shot("03-confirm-card");
-    await card.getByRole("button", { name: /确认并保存/ }).click();
+
+    // 3b. 跨视图确定性验证：切到任务中心，卡片应变成右下角非阻塞浮层
+    await page.locator(".nav-item", { hasText: "任务中心" }).click();
+    await page.waitForTimeout(1200);
+    const rescueVisible = await page.locator(".confirm-overlay.rescue-overlay").isVisible().catch(() => false);
+    check("切走后确认卡片以非阻塞浮层兜底显示", rescueVisible, `兜底浮层=${rescueVisible}`);
+
+    await page.locator(".nav-item", { hasText: "浅浅" }).click();
+    await page.waitForTimeout(1200);
+    const inputEnabled = await page.locator('input[aria-label="输入学习管理需求"]').isEnabled().catch(() => false);
+    check("确认挂起时输入框仍可用（不再锁死）", inputEnabled, `输入框可用=${inputEnabled}`);
+    const inlineBack = await page.locator(".inline-confirm").isVisible().catch(() => false);
+    const rescueGone = await page.locator(".confirm-overlay.rescue-overlay").isVisible().catch(() => false);
+    check("回到智能体页后确认卡片内联显示", inlineBack, `内联卡片可见=${inlineBack}`);
+    check("回到智能体页后兜底浮层自动隐藏", !rescueGone, `兜底浮层=${rescueGone}`);
+
+    // 3c. 确认入库（课程为空时兜底选一门）
+    const courseSelect = page.locator(".inline-confirm").locator("select").first();
+    if (!(await courseSelect.inputValue().catch(() => ""))) {
+      const options = await courseSelect.locator("option").allTextContents();
+      const pick = options.find((t) => t.trim() && !t.includes("请选择"));
+      if (pick) await courseSelect.selectOption({ label: pick.trim() });
+    }
+    await page.locator(".inline-confirm").getByRole("button", { name: /确认并保存/ }).click();
     await page.waitForTimeout(2500);
-    const confirmGone = await card.isVisible().catch(() => false);
-    check("确认后卡片关闭", !confirmGone);
+    check("确认后卡片关闭", !(await page.locator(".inline-confirm").isVisible().catch(() => false)));
   }
 
   // 4. 任务中心能看到新任务
   await page.locator(".nav-item", { hasText: "任务中心" }).click();
   await page.waitForTimeout(1500);
-  const taskText = await page.locator(".task-list-wrap").textContent();
-  check("任务中心出现新建任务", (taskText ?? "").includes("实验报告"), `列表片段：${(taskText ?? "").slice(0, 80)}`);
-  await shot("04-tasks");
-
-  // 5. 视图切换后确认卡片是否仍可见（关键回归点）
-  await page.locator(".nav-item", { hasText: "浅浅" }).click();
-  await page.waitForTimeout(800);
-  await waitIdle();
-  await composer.fill("先打开资料库，然后帮我记一个后天中午 12 点的 DDL：数据库系统的视图切换测试任务");
-  await composer.press("Enter");
-
-  // 模型可能把 navigate 与后续工具放在同轮或分轮，所以轮询等待"页面已切换且卡片已出现"，
-  // 而不是假设固定的时序（旧脚本因此误报）。
-  let sawOtherView = false;
-  let rescueVisible = false;
-  for (let i = 0; i < 40; i += 1) {
+  let taskText = "";
+  for (let i = 0; i < 15; i += 1) {
+    taskText = (await page.locator(".page-view").textContent()) ?? "";
+    if (taskText.includes(TASK_MARK)) break;
     await page.waitForTimeout(1000);
-    const v = await page.locator(".content-wrap").getAttribute("data-view");
-    if (v && v !== "assistant") sawOtherView = true;
-    rescueVisible = await page.locator(".confirm-overlay.rescue-overlay").isVisible().catch(() => false);
-    if (sawOtherView && rescueVisible) break;
   }
-  const visibleViews = await page.locator(".content-wrap").getAttribute("data-view");
-  check("Agent 能切换页面", sawOtherView, `当前视图=${visibleViews}`);
-  check("切走后确认卡片以非阻塞浮层兜底显示", rescueVisible, `当前视图=${visibleViews}, 兜底浮层=${rescueVisible}`);
-  // 回到智能体页，确认等待期间输入框不再被禁用（此前会永久锁死）
-  await page.locator(".nav-item", { hasText: "浅浅" }).click();
-  await page.waitForTimeout(900);
-  const composerNow = page.locator('input[aria-label="输入学习管理需求"]');
-  const inputEnabled = (await composerNow.count()) > 0 && (await composerNow.isEnabled().catch(() => false));
-  check("确认挂起时输入框仍可用（不再锁死）", inputEnabled, `输入框存在且可用=${inputEnabled}`);
-  // 回智能体页后，兜底浮层应隐藏、卡片改为内联显示
-  await page.waitForTimeout(800);
-  const inlineCard = await page.locator(".inline-confirm").isVisible().catch(() => false);
-  const rescueStillVisible = await page.locator(".confirm-overlay.rescue-overlay").isVisible().catch(() => false);
-  check("回到智能体页后确认卡片内联显示", inlineCard, `内联卡片可见=${inlineCard}`);
-  check("回到智能体页后兜底浮层自动隐藏", !rescueStillVisible, `兜底浮层=${rescueStillVisible}`);
-  await shot("05-cross-view-confirm");
-  // 收尾：如果卡片存在就取消，避免卡住
-  if (rescueVisible) {
-    const cancelBtn = page.locator(".confirm-overlay.rescue-overlay").getByRole("button", { name: /取消/ }).first();
-    if (await cancelBtn.isVisible().catch(() => false)) await cancelBtn.click();
-    await page.waitForTimeout(1500);
-  }
-
+  check("任务中心出现新建任务", taskText.includes(TASK_MARK), `查找标记=${TASK_MARK}`);
+  await shot("04-tasks");
   // 6. 复习计划
   await page.locator(".nav-item", { hasText: "复习计划" }).click();
   await page.waitForTimeout(800);
@@ -182,10 +186,10 @@ try {
   await page.waitForTimeout(2200);
   const userField2 = page.locator('input[aria-label="用户名"]');
   if (await userField2.isVisible().catch(() => false)) {
-    await userField2.fill("admin");
-    await page.locator('input[aria-label="密码"]').fill("admin123");
+    await userField2.fill(E2E_USER);
+    await page.locator('input[aria-label="密码"]').fill(E2E_PASS);
     await page.getByRole("button", { name: /^登录$/ }).click();
-    await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
+    await page.locator(".main-nav").waitFor({ state: "visible", timeout: 25000 }).catch(() => {});
     await page.waitForTimeout(1200);
   }
   await dismissIntro();
@@ -210,6 +214,16 @@ const failed = results.filter((r) => !r.ok);
 await writeFile(new URL("report.json", SHOTS), JSON.stringify({ results, consoleErrors }, null, 2));
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
+
+
+
+
+
+
+
+
+
+
 
 
 

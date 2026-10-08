@@ -46,6 +46,8 @@ export type Task = {
   status: "未开始" | "进行中" | "已完成" | "已逾期";
   priority: "高" | "中" | "低";
   reminder: string;
+  /** 关联的资料（复习任务可绑定到具体课件/笔记） */
+  resourceId?: string;
   updatedAt?: string;
 };
 
@@ -405,6 +407,7 @@ export function demoSnapshot(): AppSnapshot {
 export function makeId(prefix: string) {
   return `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
+
 
 
 

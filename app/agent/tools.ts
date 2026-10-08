@@ -93,6 +93,21 @@ export const AGENT_TOOLS: ToolSpec[] = [
     requiresConfirmation: false,
   },
   {
+    name: "delete_task",
+    label: "删除任务",
+    description:
+      "删除一条任务（例如重复录入或用户明确不要了）。先调用 list_tasks 找到准确标题。调用后系统会向用户弹确认卡片，确认后才真正删除。",
+    parameters: {
+      type: "object",
+      properties: {
+        taskTitle: { type: "string", description: "要删除的任务标题，模糊匹配" },
+      },
+      required: ["taskTitle"],
+      additionalProperties: false,
+    },
+    requiresConfirmation: true,
+  },
+  {
     name: "save_review_plan",
     label: "保存复习计划",
     description:
@@ -180,6 +195,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
         dueAt: { type: "string", description: "新的截止时间，ISO 8601，可选" },
         priority: { type: "string", enum: ["高", "中", "低"], description: "可选" },
         type: { type: "string", enum: ["DDL", "考试", "复习"], description: "可选" },
+        reminder: { type: "string", description: "提醒规则，例如 提前3天、1天、2小时" },
       },
       required: ["taskTitle"],
       additionalProperties: false,
@@ -234,5 +250,6 @@ export function toolSchemasForModel() {
     },
   }));
 }
+
 
 

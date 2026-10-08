@@ -26,6 +26,7 @@ import {
 import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
 import { deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, serverFileUrl, touchSnapshot, uploadFileToServer } from "./lib/cloud-sync";
+import { buildReminderText, deriveTaskStatus, groupTasks, isDueToday, parseReminderText, REMINDER_CHOICES } from "./lib/task-utils";
 import type { ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
@@ -179,6 +180,9 @@ export default function Home() {
   const [taskTitle, setTaskTitle] = useState("");
   const [taskCourse, setTaskCourse] = useState("");
   const [taskDueAt, setTaskDueAt] = useState("2026-08-12T23:59");
+  const [taskType, setTaskType] = useState<Task["type"]>("DDL");
+  const [taskPriority, setTaskPriority] = useState<Task["priority"]>("中");
+  const [taskReminderMinutes, setTaskReminderMinutes] = useState<number[]>([1440]);
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
   // 管理员面板用的服务端账号列表
   const [accounts, setAccounts] = useState<PublicAccount[]>([]);
@@ -710,7 +714,7 @@ export default function Home() {
         const withinDays = typeof args.dueWithinDays === "number" ? args.dueWithinDays : null;
         const now = Date.now();
         let tasks = snap.tasks.filter((task) => includeCompleted || task.status !== "已完成");
-        if (statusFilter) tasks = tasks.filter((task) => task.status === statusFilter);
+        if (statusFilter) tasks = tasks.filter((task) => deriveTaskStatus(task) === statusFilter);
         if (courseFilter) {
           const courseId = resolveCourseId(courseFilter);
           tasks = courseId ? tasks.filter((task) => task.courseId === courseId) : [];
@@ -730,7 +734,7 @@ export default function Home() {
             course: courseNameOf(task.courseId),
             type: task.type,
             dueAt: task.dueAt,
-            status: task.status,
+            status: deriveTaskStatus(task),
             priority: task.priority,
           })),
         };
@@ -826,6 +830,7 @@ export default function Home() {
         if (asString(args.dueAt).trim()) patch.dueAt = toLocalInputValue(asString(args.dueAt));
         if (["高", "中", "低"].includes(asString(args.priority))) patch.priority = asString(args.priority) as Task["priority"];
         if (["DDL", "考试", "复习"].includes(asString(args.type))) patch.type = asString(args.type) as Task["type"];
+        if (asString(args.reminder).trim()) patch.reminder = asString(args.reminder).trim();
         if (!Object.keys(patch).length) return { ok: false, summary: "没有提供要修改的内容。" };
         setSnapshot((current) => ({
           ...current,
@@ -844,6 +849,16 @@ export default function Home() {
         setProfile(next);
         saveProfile(next);
         return { ok: true, summary: "已更新长期记忆（用户画像）。", data: next };
+      }
+      case "delete_task": {
+        const taskTitle = asString(args.taskTitle).trim();
+        const snapTasks = snapshotRef.current.tasks;
+        const target =
+          snapTasks.find((candidate) => candidate.title === taskTitle) ??
+          snapTasks.find((candidate) => candidate.title.includes(taskTitle) || (taskTitle && taskTitle.includes(candidate.title)));
+        if (!target) return { ok: false, summary: `没有找到标题包含「${taskTitle}」的任务。` };
+        deleteTask(target.id, { silent: true });
+        return { ok: true, summary: `已删除任务「${target.title}」` };
       }
       case "update_task_status": {
         const title = asString(args.taskTitle).trim();
@@ -1634,6 +1649,26 @@ export default function Home() {
 
   // ---------- 手动表单与数据管理 ----------
 
+  // 删除任务：本地移除 + 上报云端（否则刷新会被同步回来）
+  const deleteTask = (taskId: string, options?: { silent?: boolean }) => {
+    const task = snapshotRef.current.tasks.find((item) => item.id === taskId);
+    setSnapshot((current) => {
+      const next = { ...current, tasks: current.tasks.filter((item) => item.id !== taskId) };
+      snapshotRef.current = next;
+      return next;
+    });
+    void deleteCloud("tasks", [taskId]);
+    if (!options?.silent && task) addAssistantMessage(`已删除任务「${task.title}」。`);
+  };
+
+  // 编辑任务（标题/课程/截止/类型/优先级/提醒/关联资料）
+  const updateTaskFields = (taskId: string, patch: Partial<Task>) => {
+    setSnapshot((current) => ({
+      ...current,
+      tasks: current.tasks.map((task) => (task.id === taskId ? { ...task, ...patch } : task)),
+    }));
+  };
+
   const updateTaskStatus = (taskId: string, status: Task["status"]) => {
     setSnapshot((current) => ({
       ...current,
@@ -1694,14 +1729,17 @@ export default function Home() {
       id: makeId("task"),
       title: taskTitle.trim(),
       courseId: taskCourse,
-      type: "DDL",
+      type: taskType,
       dueAt: taskDueAt,
       status: "未开始",
-      priority: "中",
-      reminder: "提前3天、1天、2小时",
+      priority: taskPriority,
+      reminder: buildReminderText(taskReminderMinutes),
     };
     setSnapshot((current) => ({ ...current, tasks: [task, ...current.tasks] }));
     setTaskTitle("");
+    setTaskReminderMinutes([1440]);
+    setTaskPriority("中");
+    setTaskType("DDL");
     setShowTaskForm(false);
   };
 
@@ -2097,8 +2135,22 @@ export default function Home() {
               setCourseId={setTaskCourse}
               dueAt={taskDueAt}
               setDueAt={setTaskDueAt}
+              taskType={taskType}
+              setTaskType={setTaskType}
+              priority={taskPriority}
+              setPriority={setTaskPriority}
+              reminderMinutes={taskReminderMinutes}
+              setReminderMinutes={setTaskReminderMinutes}
+              resources={snapshot.resources}
               onCreate={createTask}
               onComplete={(taskId) => updateTaskStatus(taskId, "已完成")}
+              onDelete={deleteTask}
+              onUpdate={updateTaskFields}
+              onOpenResource={(resourceId) => {
+                const target = snapshotRef.current.resources.find((item) => item.id === resourceId);
+                setSearch(target?.title ?? "");
+                setView("resources");
+              }}
             />
           ) : null}
 
@@ -2445,6 +2497,7 @@ function AssistantView({
 
         <div className="quick-actions">
           <button onClick={() => setInput("帮我记下这个DDL：")}>＋ 录入 DDL</button>
+          <button onClick={() => setInput("今天该做什么？帮我安排一下")}>✦ 今天做什么</button>
           <button onClick={() => setInput("我下周有什么要交的？")}>◷ 下周截止</button>
           <button onClick={() => setInput("帮我把数据库的课件找出来")}>⌕ 查找资料</button>
           <button onClick={() => onNavigate("review")}>✦ 生成复习计划</button>
@@ -2540,12 +2593,34 @@ function ResourcesView({
   onReassignResource: (resourceId: string, courseId: string) => void;
 }) {
   const [selectedId, setSelectedId] = useState(resources[0]?.id ?? "");
-  const selectedResource = resources.find((resource) => resource.id === selectedId) ?? resources[0] ?? null;
+  const [courseFilter, setCourseFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  // 课程与状态筛选（搜索框由外层负责）
+  const visible = resources.filter((resource) => {
+    if (courseFilter && resource.courseId !== courseFilter) return false;
+    if (statusFilter && resource.status !== statusFilter) return false;
+    return true;
+  });
+  const selectedResource = visible.find((resource) => resource.id === selectedId) ?? visible[0] ?? null;
 
   return <div className="page-view"><PageHeader eyebrow="LIBRARY" title="课程资料库" description="让每份资料有位置，也有下一步。" action={<button className="primary-button" onClick={() => setShowForm(!showForm)}>＋ 添加资料</button>} />
     {showForm ? <div className="inline-form"><div className="form-title">新建资料卡片 <span>若要保存原文件并自动识别，请在浅浅页面点击“＋”上传</span></div><div className="form-grid"><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="资料名称" /><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value as Resource["type"])}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select><button className="primary-button" onClick={onCreate}>保存资料</button></div></div> : null}
-    <div className="toolbar"><label className="local-search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索标题、课程、标签" /></label><div className="filter-chip">全部课程⌄</div><div className="filter-chip">全部状态⌄</div></div>
-    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{resources.length} 份资料 <span>· 本地索引</span></div>{resources.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{resources.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} courses={courses} onReassign={onReassignResource} /></div>
+    <div className="toolbar">
+      <label className="local-search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索标题、课程、标签" /></label>
+      <select value={courseFilter} onChange={(event) => setCourseFilter(event.target.value)} aria-label="按课程筛选资料">
+        <option value="">全部课程</option>
+        {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+      </select>
+      <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="按状态筛选资料">
+        <option value="">全部状态</option>
+        <option value="未整理">未整理</option>
+        <option value="学习中">学习中</option>
+        <option value="待复习">待复习</option>
+        <option value="已归档">已归档</option>
+      </select>
+      {(courseFilter || statusFilter) ? <button className="text-button" onClick={() => { setCourseFilter(""); setStatusFilter(""); }}>清除筛选</button> : null}
+    </div>
+    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{visible.length} 份资料 <span>· 本地索引</span></div>{visible.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{visible.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} courses={courses} onReassign={onReassignResource} /></div>
   </div>;
 }
 
@@ -2679,13 +2754,236 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign 
   );
 }
 
-function TasksView({ tasks, courseMap, courses, showForm, setShowForm, title, setTitle, courseId, setCourseId, dueAt, setDueAt, onCreate, onComplete }: { tasks: Task[]; courseMap: Map<string, Course>; courses: Course[]; showForm: boolean; setShowForm: (value: boolean) => void; title: string; setTitle: (value: string) => void; courseId: string; setCourseId: (value: string) => void; dueAt: string; setDueAt: (value: string) => void; onCreate: () => void; onComplete: (id: string) => void; }) {
-  return <div className="page-view"><PageHeader eyebrow="TASK DESK" title="任务中心" description="DDL、考试和复习时段，放在同一条时间线上。" action={<button className="primary-button" onClick={() => setShowForm(!showForm)}>＋ 新建任务</button>} />
-    {showForm ? <div className="inline-form"><div className="form-title">新建 DDL <span>默认提醒：提前 3 天、1 天、2 小时</span></div><div className="form-grid task-form"><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="任务名称" /><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} /><button className="primary-button" onClick={onCreate}>保存任务</button></div></div> : null}
-    <div className="task-list-wrap"><div className="task-list-head"><span>未完成任务 · {tasks.length}</span><div><span className="legend-dot high" />高优先级 <span className="legend-dot" />普通</div></div>{tasks.map((task) => <div className="task-row" key={task.id}><div className={`task-marker ${task.priority === "高" ? "high" : ""}`} /><div className="task-row-main"><strong>{task.title}</strong><span>{courseMap.get(task.courseId)?.name ?? "未分类"} · {task.type} · {task.reminder}</span></div><time>{formatDate(task.dueAt)}</time><span className={`status-pill ${task.status === "进行中" ? "working" : ""}`}>{task.status}</span><button className="complete-button" onClick={() => onComplete(task.id)}>完成</button></div>)}{tasks.length === 0 ? <EmptyState title="所有任务都完成了" copy="可以去复习计划，安排下一步学习。" /> : null}</div>
-  </div>;
-}
+function TasksView({
+  tasks, courseMap, courses, resources, showForm, setShowForm, title, setTitle, courseId, setCourseId,
+  dueAt, setDueAt, taskType, setTaskType, priority, setPriority, reminderMinutes, setReminderMinutes,
+  onCreate, onComplete, onDelete, onUpdate, onOpenResource,
+}: {
+  tasks: Task[];
+  courseMap: Map<string, Course>;
+  courses: Course[];
+  resources: Resource[];
+  showForm: boolean;
+  setShowForm: (value: boolean) => void;
+  title: string;
+  setTitle: (value: string) => void;
+  courseId: string;
+  setCourseId: (value: string) => void;
+  dueAt: string;
+  setDueAt: (value: string) => void;
+  taskType: Task["type"];
+  setTaskType: (value: Task["type"]) => void;
+  priority: Task["priority"];
+  setPriority: (value: Task["priority"]) => void;
+  reminderMinutes: number[];
+  setReminderMinutes: (value: number[]) => void;
+  onCreate: () => void;
+  onComplete: (id: string) => void;
+  onDelete: (id: string) => void;
+  onUpdate: (id: string, patch: Partial<Task>) => void;
+  onOpenResource: (resourceId: string) => void;
+}) {
+  const now = new Date();
+  const [courseFilter, setCourseFilter] = useState("");
+  const [typeFilter, setTypeFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
+  const decorated = tasks.map((task) => ({ task, status: deriveTaskStatus(task, now) }));
+  const filtered = decorated.filter(({ task, status }) => {
+    if (courseFilter && task.courseId !== courseFilter) return false;
+    if (typeFilter && task.type !== typeFilter) return false;
+    if (statusFilter && status !== statusFilter) return false;
+    return true;
+  });
+
+  const overdueCount = decorated.filter((item) => item.status === "已逾期").length;
+  const todayCount = decorated.filter((item) => item.status !== "已逾期" && isDueToday(item.task, now)).length;
+  const groups = groupTasks(filtered.map((item) => item.task), now);
+  const statusOf = new Map(decorated.map((item) => [item.task.id, item.status]));
+
+  return (
+    <div className="page-view">
+      <PageHeader
+        eyebrow="TASK DESK"
+        title="任务中心"
+        description="DDL、考试和复习时段，放在同一条时间线上。"
+        action={<button className="primary-button" onClick={() => setShowForm(!showForm)}>＋ 新建任务</button>}
+      />
+
+      {overdueCount > 0 || todayCount > 0 ? (
+        <div className="task-summary">
+          {overdueCount > 0 ? <span className="task-summary-chip overdue">已逾期 {overdueCount}</span> : null}
+          {todayCount > 0 ? <span className="task-summary-chip today">今天 {todayCount}</span> : null}
+          <button className="text-button" onClick={() => { setStatusFilter("已逾期"); }}>只看逾期</button>
+        </div>
+      ) : null}
+
+      {showForm ? (
+        <div className="inline-form">
+          <div className="form-title">新建任务 <span>提醒规则可多选；留空则默认提前 1 天</span></div>
+          <div className="form-grid task-form">
+            <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="任务名称" />
+            <select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select>
+            <input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} />
+            <select value={taskType} onChange={(event) => setTaskType(event.target.value as Task["type"])}>
+              <option value="DDL">DDL</option>
+              <option value="考试">考试</option>
+              <option value="复习">复习</option>
+            </select>
+            <select value={priority} onChange={(event) => setPriority(event.target.value as Task["priority"])}>
+              <option value="高">高优先级</option>
+              <option value="中">中优先级</option>
+              <option value="低">低优先级</option>
+            </select>
+            <button className="primary-button" onClick={onCreate}>保存任务</button>
+          </div>
+          <div className="reminder-choices">
+            <span>提醒：</span>
+            {REMINDER_CHOICES.map((choice) => (
+              <label key={choice.minutes} className={reminderMinutes.includes(choice.minutes) ? "on" : ""}>
+                <input
+                  type="checkbox"
+                  checked={reminderMinutes.includes(choice.minutes)}
+                  onChange={(event) => {
+                    setReminderMinutes(
+                      event.target.checked
+                        ? [...reminderMinutes, choice.minutes]
+                        : reminderMinutes.filter((value) => value !== choice.minutes),
+                    );
+                  }}
+                />
+                {choice.label}
+              </label>
+            ))}
+          </div>
+        </div>
+      ) : null}
+
+      <div className="toolbar task-toolbar">
+        <select value={courseFilter} onChange={(event) => setCourseFilter(event.target.value)} aria-label="按课程筛选">
+          <option value="">全部课程</option>
+          {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+        </select>
+        <select value={typeFilter} onChange={(event) => setTypeFilter(event.target.value)} aria-label="按类型筛选">
+          <option value="">全部类型</option>
+          <option value="DDL">DDL</option>
+          <option value="考试">考试</option>
+          <option value="复习">复习</option>
+        </select>
+        <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="按状态筛选">
+          <option value="">全部状态</option>
+          <option value="未开始">未开始</option>
+          <option value="进行中">进行中</option>
+          <option value="已逾期">已逾期</option>
+        </select>
+        {(courseFilter || typeFilter || statusFilter) ? (
+          <button className="text-button" onClick={() => { setCourseFilter(""); setTypeFilter(""); setStatusFilter(""); }}>清除筛选</button>
+        ) : null}
+        <span className="list-meta-inline">共 {filtered.length} 条</span>
+      </div>
+
+      {groups.length === 0 ? (
+        <EmptyState title="没有符合条件的任务" copy="换个筛选条件，或点右上角新建一条任务。" />
+      ) : groups.map((group) => (
+        <div className="task-group" key={group.label}>
+          <div className={`task-group-label ${group.label === "已逾期" ? "overdue" : ""}`}>
+            {group.label} · {group.items.length}
+          </div>
+          {group.items.map((task) => {
+            const status = statusOf.get(task.id) ?? task.status;
+            const linked = task.resourceId ? resources.find((item) => item.id === task.resourceId) : undefined;
+            const editing = editingId === task.id;
+            return (
+              <div className={`task-row ${status === "已逾期" ? "overdue" : ""}`} key={task.id}>
+                <div className={`task-marker ${task.priority === "高" ? "high" : status === "已逾期" ? "overdue" : ""}`} />
+                {editing ? (
+                  <div className="task-edit-grid">
+                    <input value={task.title} onChange={(event) => onUpdate(task.id, { title: event.target.value })} aria-label="任务名称" />
+                    <select value={task.courseId} onChange={(event) => onUpdate(task.id, { courseId: event.target.value })} aria-label="任务课程">
+                      {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+                    </select>
+                    <input type="datetime-local" value={task.dueAt} onChange={(event) => onUpdate(task.id, { dueAt: event.target.value })} aria-label="任务截止" />
+                    <select value={task.type} onChange={(event) => onUpdate(task.id, { type: event.target.value as Task["type"] })} aria-label="任务类型">
+                      <option value="DDL">DDL</option>
+                      <option value="考试">考试</option>
+                      <option value="复习">复习</option>
+                    </select>
+                    <select value={task.priority} onChange={(event) => onUpdate(task.id, { priority: event.target.value as Task["priority"] })} aria-label="任务优先级">
+                      <option value="高">高</option>
+                      <option value="中">中</option>
+                      <option value="低">低</option>
+                    </select>
+                    <select
+                      value={task.resourceId ?? ""}
+                      onChange={(event) => onUpdate(task.id, { resourceId: event.target.value || undefined })}
+                      aria-label="关联资料"
+                    >
+                      <option value="">不关联资料</option>
+                      {resources.filter((item) => item.courseId === task.courseId).map((item) => (
+                        <option key={item.id} value={item.id}>{item.title}</option>
+                      ))}
+                    </select>
+                    <div className="reminder-choices task-edit-reminders">
+                      <span>提醒：</span>
+                      {REMINDER_CHOICES.map((choice) => {
+                        const selected = parseReminderText(task.reminder).includes(choice.minutes);
+                        return (
+                          <label key={choice.minutes} className={selected ? "on" : ""}>
+                            <input
+                              type="checkbox"
+                              checked={selected}
+                              onChange={(event) => {
+                                const current = parseReminderText(task.reminder);
+                                const next = event.target.checked
+                                  ? [...current, choice.minutes]
+                                  : current.filter((value) => value !== choice.minutes);
+                                onUpdate(task.id, { reminder: buildReminderText(next) });
+                              }}
+                            />
+                            {choice.label}
+                          </label>
+                        );
+                      })}
+                    </div>
+                    <div className="task-edit-actions">
+                      <button className="quiet-button" onClick={() => setEditingId(null)}>完成编辑</button>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="task-row-main">
+                    <strong>{task.title}</strong>
+                    <span>
+                      {courseMap.get(task.courseId)?.name ?? "未分类"} · {task.type} · {task.reminder}
+                      {linked ? <> · <button className="text-button inline" onClick={() => onOpenResource(linked.id)}>查看资料：{linked.title}</button></> : null}
+                    </span>
+                  </div>
+                )}
+                {!editing ? <time className={status === "已逾期" ? "overdue" : ""}>{formatDate(task.dueAt)}</time> : null}
+                {!editing ? <span className={`status-pill ${status === "进行中" ? "working" : status === "已逾期" ? "overdue" : ""}`}>{status}</span> : null}
+                {!editing ? (
+                  <div className="task-row-actions">
+                    <button className="text-button" onClick={() => setEditingId(task.id)}>编辑</button>
+                    {pendingDeleteId === task.id ? (
+                      <>
+                        <button className="quiet-button danger" onClick={() => { onDelete(task.id); setPendingDeleteId(null); }}>确认删除</button>
+                        <button className="text-button" onClick={() => setPendingDeleteId(null)}>取消</button>
+                      </>
+                    ) : (
+                      <button className="text-button" onClick={() => setPendingDeleteId(task.id)}>删除</button>
+                    )}
+                    <button className="complete-button" onClick={() => onComplete(task.id)}>完成</button>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+    </div>
+  );
+}
 function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprovePlan, onRejectPlan }: { courses: Course[]; running: boolean; plan: PlanConfirmState | null; confirmError: string; onGenerate: (courseId: string, examAt: string, availability: string) => void; onApprovePlan: () => void; onRejectPlan: () => void; }) {
   const [courseId, setCourseId] = useState(courses[0]?.id ?? "");
   const [examAt, setExamAt] = useState(() => toLocalInputValue(new Date(Date.now() + 7 * 86_400_000).toISOString()));
@@ -2879,6 +3177,11 @@ function formatBytes(size: number) {
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
 function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+
+
+
+
+
 
 
 

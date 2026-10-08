@@ -61,7 +61,7 @@ if (formReady) {
   await p1.getByRole("button", { name: /保存任务/ }).click();
   await p1.waitForTimeout(2000);
 }
-const tasks1 = (await p1.locator(".task-list-wrap").textContent()) ?? "";
+const tasks1 = (await p1.locator(".page-view").textContent()) ?? "";
 check("设备1 创建任务成功", tasks1.includes("云同步验证任务XYZ"), `片段：${tasks1.replace(/\s+/g, " ").slice(0, 60)}`);
 
 // 等自动同步（防抖 4 秒）
@@ -81,7 +81,7 @@ await p2.waitForTimeout(3000);
 await login(p2, USER, PASS);
 await p2.locator(".nav-item", { hasText: "任务中心" }).click();
 await p2.waitForTimeout(2000);
-const tasks2 = (await p2.locator(".task-list-wrap").textContent()) ?? "";
+const tasks2 = (await p2.locator(".page-view").textContent()) ?? "";
 check("设备2 登录后看到设备1的数据（跨设备同步）", tasks2.includes("云同步验证任务XYZ"), `片段：${tasks2.replace(/\s+/g, " ").slice(0, 60)}`);
 await p2.screenshot({ path: new URL("../.e2e/sync-device2.png", import.meta.url).pathname.slice(1) });
 
@@ -96,7 +96,7 @@ await p1.reload({ waitUntil: "load" });
 await login(p1, USER, PASS);
 await p1.locator(".nav-item", { hasText: "任务中心" }).click();
 await p1.waitForTimeout(2000);
-const tasks1b = (await p1.locator(".task-list-wrap").textContent()) ?? "";
+const tasks1b = (await p1.locator(".page-view").textContent()) ?? "";
 check("设备1 刷新后拿到设备2的新数据", tasks1b.includes("设备2新建的任务ABC"), `片段：${tasks1b.replace(/\s+/g, " ").slice(0, 60)}`);
 
 // ---------- 账号隔断 ----------
@@ -108,11 +108,12 @@ await p3.waitForTimeout(3000);
 await login(p3, "student1", "123456");
 await p3.locator(".nav-item", { hasText: "任务中心" }).click();
 await p3.waitForTimeout(2000);
-const tasks3 = (await p3.locator(".task-list-wrap").textContent()) ?? "";
+const tasks3 = (await p3.locator(".page-view").textContent()) ?? "";
 check("另一账号看不到该用户的数据（账号隔离）", !tasks3.includes("云同步验证任务XYZ"), `片段：${tasks3.replace(/\s+/g, " ").slice(0, 50)}`);
 
 await browser.close();
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过  （测试账号：${USER}）`);
 process.exit(failed.length ? 1 : 0);
+
 

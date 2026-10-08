@@ -54,7 +54,7 @@ async function createTaskViaForm(title) {
 async function readTasks() {
   await page.locator(".nav-item", { hasText: "任务中心" }).click();
   await page.waitForTimeout(900);
-  return (await page.locator(".task-list-wrap").textContent()) ?? "";
+  return (await page.locator(".page-view").textContent()) ?? "";
 }
 
 try {
@@ -96,4 +96,5 @@ try {
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);
+
 
