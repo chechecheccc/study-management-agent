@@ -5,10 +5,9 @@ import {
   validateExtractRequest,
 } from "../../../lib/ai-contract";
 import { describeModelFailure, readModelErrorDetail } from "../../../lib/model-error";
+import { resolveModelTarget } from "../../../lib/llm-server";
 
 // 文件/截图信息抽取：DeepSeek V4.1 Flash（原生多模态）
-const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
-const DEFAULT_MODEL = "deepseek-v4-flash";
 const MAX_REQUEST_BYTES = 14_500_000;
 const TIMEOUT_MS = 55_000;
 
@@ -43,32 +42,29 @@ export async function POST(request: Request) {
     return errorResponse("INVALID_INPUT", validated.message, 400);
   }
 
-  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
-  if (!apiKey) {
-    return errorResponse(
-      "MODEL_NOT_CONFIGURED",
-      "在线识别尚未配置，仍可使用手动录入。",
-      503,
-      true,
-    );
+  // 用户自己的模型优先（视觉模型走设置里的「视觉模型」）
+  const resolved = resolveModelTarget((rawBody as Record<string, unknown>)?.llm, "vision");
+  if (!resolved.ok) {
+    return errorResponse(resolved.code, `${resolved.message} 仍可使用手动录入。`, 503, true);
   }
+  const { endpoint: modelEndpoint, apiKey, model: visionModel, deepseek } = resolved.target;
 
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const upstream = await fetch(process.env.DEEPSEEK_API_URL?.trim() || DEFAULT_ENDPOINT, {
+    const upstream = await fetch(modelEndpoint, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
         "Content-Type": "application/json",
       },
-      body: JSON.stringify(buildModelPayload(validated.value)),
+      body: JSON.stringify(buildModelPayload(validated.value, visionModel, deepseek)),
       signal: controller.signal,
     });
 
     if (!upstream.ok) {
-      const failure = describeModelFailure(upstream.status, await readModelErrorDetail(upstream));
+      const failure = describeModelFailure(upstream.status, await readModelErrorDetail(upstream), { custom: resolved.target.custom });
       const manual = failure.code === "MODEL_INSUFFICIENT_BALANCE" || failure.code === "MODEL_AUTH_FAILED";
       return errorResponse(failure.code, failure.message + (manual ? "也可以先手动录入这份资料。" : ""), failure.status, true);
     }
@@ -84,7 +80,7 @@ export async function POST(request: Request) {
       return jsonResponse({
         ok: true,
         result,
-        model: process.env.DEEPSEEK_EXTRACT_MODEL?.trim() || DEFAULT_MODEL,
+        model: visionModel,
         requestId: data.request_id ?? null,
       });
     } catch {
@@ -105,7 +101,7 @@ export async function POST(request: Request) {
   }
 }
 
-function buildModelPayload(request: ExtractRequest) {
+function buildModelPayload(request: ExtractRequest, model: string, deepseek: boolean) {
   const prompt = buildExtractionPrompt(request);
   const content = request.mode === "image"
     ? [
@@ -115,7 +111,7 @@ function buildModelPayload(request: ExtractRequest) {
     : prompt;
 
   return {
-    model: process.env.DEEPSEEK_EXTRACT_MODEL?.trim() || DEFAULT_MODEL,
+    model,
     messages: [
       {
         role: "system",
@@ -126,7 +122,9 @@ function buildModelPayload(request: ExtractRequest) {
     // DeepSeek 默认会先输出思考内容，思考 token 会占用输出预算；
     // 不设 max_tokens 时可能截断正文导致抽取失败，因此抽取链路默认关闭思考。
     // 需要更强推理时可设 DEEPSEEK_EXTRACT_THINKING=enabled（届时建议同时放宽 token 预算）。
-    thinking: { type: process.env.DEEPSEEK_EXTRACT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" },
+    ...(deepseek
+      ? { thinking: { type: process.env.DEEPSEEK_EXTRACT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" } }
+      : {}),
     temperature: 0.1,
     stream: false,
   };

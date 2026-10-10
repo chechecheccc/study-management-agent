@@ -213,6 +213,14 @@ test("记忆与提示词：画像注入系统提示词", () => {
 
 import { parseReminderOffsets, computeDueReminders, formatMinutesLeft } from "../app/agent/reminders.ts";
 import { safeSlice, stripLoneSurrogateEscapes } from "../app/agent/protocol.ts";
+import {
+  LLM_DEFAULTS,
+  isAllowedEndpoint,
+  isDeepSeekEndpoint,
+  maskApiKey,
+  normalizeLlmConfig,
+  resolveChatEndpoint,
+} from "../app/lib/llm-config.ts";
 import { buildICalendar } from "../app/lib/ical.ts";
 import { addProfileNote } from "../app/agent/memory.ts";
 
@@ -261,6 +269,40 @@ test("发送前的孤立代理兜底：JSON 文本里的半截数学符号会被
   const paired = JSON.stringify({ content: "𝑢" });
   assert.equal(stripLoneSurrogateEscapes(paired), paired);
   assert.equal(JSON.parse(stripLoneSurrogateEscapes(paired)).content, "𝑢");
+});
+
+test("自带模型配置：校验、地址拼接与掩码", () => {
+  // 合法配置：地址会去掉末尾斜杠，视觉模型缺省跟随对话模型
+  const ok = normalizeLlmConfig({
+    baseUrl: "https://api.openai.com/v1/",
+    apiKey: "sk-abcdefghijklmn",
+    agentModel: "gpt-4o-mini",
+  });
+  assert.equal(ok.baseUrl, "https://api.openai.com/v1");
+  assert.equal(ok.visionModel, "gpt-4o-mini");
+  assert.equal(resolveChatEndpoint(ok.baseUrl), "https://api.openai.com/v1/chat/completions");
+  assert.equal(isDeepSeekEndpoint(ok.baseUrl), false);
+
+  // DeepSeek 的地址（不带 /v1）也要拼对
+  assert.equal(resolveChatEndpoint("https://api.deepseek.com"), "https://api.deepseek.com/v1/chat/completions");
+  assert.equal(isDeepSeekEndpoint("https://api.deepseek.com"), true);
+  // 已经写全了 chat/completions 就不再改
+  assert.equal(resolveChatEndpoint("https://x.example.com/v1/chat/completions"), "https://x.example.com/v1/chat/completions");
+
+  // 非法输入一律返回 null（调用方据此回退默认模型）
+  assert.equal(normalizeLlmConfig(null), null);
+  assert.equal(normalizeLlmConfig({ baseUrl: "not-a-url", apiKey: "sk-abcdefghijklmn" }), null);
+  assert.equal(normalizeLlmConfig({ baseUrl: "https://api.openai.com/v1", apiKey: "short" }), null);
+  assert.equal(normalizeLlmConfig({ baseUrl: "http://localhost:8080", apiKey: "sk-abcdefghijklmn" }), null);
+  assert.equal(isAllowedEndpoint("file:///etc/passwd"), false);
+  assert.equal(isAllowedEndpoint("https://api.moonshot.cn/v1"), true);
+
+  // 掩码不能泄露完整 key
+  const masked = maskApiKey("sk-1234567890abcdef");
+  assert.ok(!masked.includes("1234567890abcdef"));
+  assert.match(masked, /^sk-123…cdef$/);
+  assert.equal(maskApiKey("short"), "****");
+  assert.equal(LLM_DEFAULTS.agentModel, "deepseek-v4-flash");
 });
 
 test("Sprint 4 工具注册表：内容阅读、记忆笔记、任务修改", () => {

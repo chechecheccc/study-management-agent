@@ -6,10 +6,9 @@ import type { AgentToolCall } from "../../../agent/protocol";
 import { buildAgentSystemPrompt } from "../../../agent/prompts";
 import { toolSchemasForModel } from "../../../agent/tools";
 import { describeModelFailure, readModelErrorDetail } from "../../../lib/model-error";
+import { resolveModelTarget } from "../../../lib/llm-server";
 
 // Agent 对话与工具调用：DeepSeek V4.1 Flash（OpenAI 兼容接口）
-const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
-const DEFAULT_AGENT_MODEL = "deepseek-v4-flash";
 const MAX_REQUEST_BYTES = 1_000_000;
 const TIMEOUT_MS = 55_000;
 
@@ -57,17 +56,12 @@ export async function POST(request: Request) {
   }
   const context = sanitizeAgentContext(body.context);
 
-  const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
-  if (!apiKey) {
-    return errorResponse(
-      "MODEL_NOT_CONFIGURED",
-      "在线模型尚未配置，智能体暂时只能陪你做手动管理。",
-      503,
-      true,
-    );
+  // 用户自己的模型（设置里填的）优先，其次才是服务端 .env 的默认模型
+  const resolved = resolveModelTarget(body.llm, "agent");
+  if (!resolved.ok) {
+    return errorResponse(resolved.code, resolved.message, 503, true);
   }
-
-  const model = process.env.DEEPSEEK_AGENT_MODEL?.trim() || DEFAULT_AGENT_MODEL;
+  const { endpoint, apiKey, model, deepseek } = resolved.target;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
@@ -82,12 +76,15 @@ export async function POST(request: Request) {
         tools: toolSchemasForModel(),
         tool_choice: "auto",
         // 同理：不设 max_tokens 时，关闭思考可保证工具调用一定能输出完整 JSON。
-        thinking: { type: process.env.DEEPSEEK_AGENT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" },
+        // thinking 是 DeepSeek 私有参数，换成别家模型时不能带，否则可能直接被拒绝。
+        ...(deepseek
+          ? { thinking: { type: process.env.DEEPSEEK_AGENT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" } }
+          : {}),
         temperature: 0.3,
       stream: false,
     }));
 
-    const upstream = await fetch(process.env.DEEPSEEK_API_URL?.trim() || DEFAULT_ENDPOINT, {
+    const upstream = await fetch(endpoint, {
       method: "POST",
       headers: {
         Authorization: `Bearer ${apiKey}`,
@@ -99,7 +96,7 @@ export async function POST(request: Request) {
 
     if (!upstream.ok) {
       // 把上游的真实原因（余额不足 / 密钥失效 / 频率限制）透出来
-      const failure = describeModelFailure(upstream.status, await readModelErrorDetail(upstream));
+      const failure = describeModelFailure(upstream.status, await readModelErrorDetail(upstream), { custom: resolved.target.custom });
       return errorResponse(failure.code, failure.message, failure.status, true);
     }
 

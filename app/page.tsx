@@ -60,6 +60,8 @@ import { AccountPanel } from "./components/account-panel";
 import { applyPresets, isPresetCourseId, isPresetResourceId } from "./lib/presets";
 import { loadPreferences, savePreferences } from "./lib/preferences";
 import type { Preferences } from "./lib/preferences";
+import { LLM_DEFAULTS, loadLlmConfig, maskApiKey, normalizeLlmConfig, saveLlmConfig } from "./lib/llm-config";
+import type { LlmConfig } from "./lib/llm-config";
 import { fitSessionsToAvailability, parseAvailability } from "./lib/availability";
 import { formatPlanDate, formatSessionDetail, hasSessionDetail, planSummary, sanitizePlanSessions } from "./lib/review-plan";
 import type { PlanSession } from "./lib/review-plan";
@@ -176,6 +178,9 @@ export default function Home() {
   // 界面偏好（本机设置）：动画开关
   const [preferences, setPreferences] = useState<Preferences>({ animations: true });
   const [preferencesReady, setPreferencesReady] = useState(false);
+  // 用户自己的模型配置（本机保存；为空则用服务端默认模型）
+  const [llmConfig, setLlmConfig] = useState<LlmConfig | null>(null);
+  const llmConfigRef = useRef<LlmConfig | null>(null);
   const [snapshot, setSnapshot] = useState<AppSnapshot>(emptySnapshot());
   const [ready, setReady] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
@@ -651,11 +656,45 @@ export default function Home() {
       setPreferences(stored);
       setPreferencesReady(true);
       if (!stored.animations) setShowIntro(false);
+      const storedLlm = loadLlmConfig();
+      llmConfigRef.current = storedLlm;
+      setLlmConfig(storedLlm);
     });
     return () => {
       cancelled = true;
     };
   }, []);
+
+  // 保存用户自己的模型配置（传 null 表示恢复默认模型）
+  const saveLlmConfigForUser = (next: LlmConfig | null) => {
+    const normalized = next ? normalizeLlmConfig(next) : null;
+    llmConfigRef.current = normalized;
+    setLlmConfig(normalized);
+    saveLlmConfig(normalized);
+  };
+
+  // 设置页的「测试连接」：用当前填的配置发一个最小请求，返回一句人话结果
+  const testLlmConnection = async (draft: LlmConfig, kind: "agent" | "vision"): Promise<string> => {
+    try {
+      const response = await fetch("/api/ai/ping", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ llm: draft, kind }),
+      });
+      const data = (await response.json()) as {
+        ok?: boolean;
+        model?: string;
+        custom?: string;
+        error?: { message?: string };
+      };
+      if (data.ok) {
+        return `连接成功：${data.model ?? "模型"}${data.custom === "custom" ? "（你自己的配置）" : "（默认模型）"}`;
+      }
+      return `测试失败：${data.error?.message ?? "未知错误"}`;
+    } catch {
+      return "测试失败：请求没有发出去，检查网络后重试。";
+    }
+  };
 
   const toggleAnimations = (next: boolean) => {
     const updated = { ...preferences, animations: next };
@@ -814,6 +853,8 @@ export default function Home() {
           timezone: "Asia/Shanghai",
           profile: profileRef.current,
         },
+        // 用户在自己电脑上填的模型配置（没有就省略，服务端回退到默认模型）
+        ...(llmConfigRef.current ? { llm: llmConfigRef.current } : {}),
       }),
     });
     const data = (await response.json()) as {
@@ -1584,6 +1625,8 @@ export default function Home() {
       signal,
       body: JSON.stringify({
         ...request,
+        // 视觉/文件识别：优先用用户自己的模型配置
+        ...(llmConfigRef.current ? { llm: llmConfigRef.current } : {}),
         courseNames: snapshot.courses.map((course) => course.name),
         currentDate: new Date().toISOString(),
         timezone: "Asia/Shanghai",
@@ -2593,6 +2636,10 @@ export default function Home() {
               onReset={resetDemo}
               preferences={preferences}
               currentUser={currentUser}
+              llmConfig={llmConfig}
+              defaultModelLabel={`${LLM_DEFAULTS.agentModel}（内置默认）`}
+              onSaveLlm={saveLlmConfigForUser}
+              onTestLlm={testLlmConnection}
               onToggleAnimations={toggleAnimations}
               onLogout={logout}
               inputRef={importInputRef}
@@ -3940,7 +3987,8 @@ function PlanItem({ date, title, duration, note, focus, route, checkpoint }: {
 
 function SettingsView({
   snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, notificationPermission,
-  preferences, currentUser, onToggleAnimations, onSyncNow, onSaveProfile, onExport, onExportICal,
+  preferences, currentUser, llmConfig, defaultModelLabel, onToggleAnimations, onSaveLlm, onTestLlm,
+  onSyncNow, onSaveProfile, onExport, onExportICal,
   onEnableNotifications, onImport, onFile, onReset, onLogout, inputRef,
 }: {
   snapshot: AppSnapshot;
@@ -3952,6 +4000,10 @@ function SettingsView({
   notificationPermission: NotificationPermission | "unsupported";
   preferences: Preferences;
   currentUser: SessionUser;
+  llmConfig: LlmConfig | null;
+  defaultModelLabel: string;
+  onSaveLlm: (config: LlmConfig | null) => void;
+  onTestLlm: (draft: LlmConfig, kind: "agent" | "vision") => Promise<string>;
   onToggleAnimations: (next: boolean) => void;
   onSyncNow: () => void;
   onSaveProfile: (profile: UserProfile) => void;
@@ -3966,6 +4018,9 @@ function SettingsView({
 }) {
   const [draft, setDraft] = useState<UserProfile>(profile);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [llmDraft, setLlmDraft] = useState<LlmConfig>(() => llmConfig ?? { ...LLM_DEFAULTS, apiKey: "" });
+  const [llmMessage, setLlmMessage] = useState("");
+  const [llmTesting, setLlmTesting] = useState(false);
   const notificationLabel =
     notificationPermission === "granted" ? "桌面提醒已开启"
       : notificationPermission === "denied" ? "被浏览器拦截"
@@ -4030,6 +4085,71 @@ function SettingsView({
             </div>
             <button className="quiet-button" onClick={onExportICal}>导出日历</button>
           </div>
+        </section>
+
+        <section className="settings-card">
+          <div className="card-kicker">MODEL</div>
+          <h3>模型（LLM）</h3>
+          <p>
+            默认使用浅浅内置的模型。你也可以填自己的 <b>OpenAI 兼容</b>接口（能接受 <code>/chat/completions</code> 的服务都行），
+            保存后对话、工具调用与图片/文件识别都会走你的模型；随时可以恢复默认。
+          </p>
+          <div className="settings-row">
+            <div className="settings-row-main">
+              <strong>{llmConfig ? "正在使用你自己的模型" : "正在使用内置默认模型"}</strong>
+              <small>
+                {llmConfig
+                  ? `${llmConfig.baseUrl} · 对话 ${llmConfig.agentModel} · 视觉 ${llmConfig.visionModel} · Key ${maskApiKey(llmConfig.apiKey)}`
+                  : `当前：${defaultModelLabel} · 接口与密钥由服务端保管`}
+              </small>
+            </div>
+            <span className="settings-row-actions">
+              <button
+                className="quiet-button"
+                disabled={llmTesting}
+                onClick={async () => {
+                  setLlmTesting(true);
+                  setLlmMessage("");
+                  const text = await onTestLlm(normalizeLlmConfig(llmDraft) ?? llmDraft, "agent");
+                  setLlmMessage(text);
+                  setLlmTesting(false);
+                }}
+              >
+                {llmTesting ? "测试中…" : "测试连接"}
+              </button>
+              {llmConfig ? (
+                <button className="text-button" onClick={() => { onSaveLlm(null); setLlmDraft({ ...LLM_DEFAULTS, apiKey: "" }); setLlmMessage("已恢复为内置默认模型。"); }}>
+                  恢复默认
+                </button>
+              ) : null}
+            </span>
+          </div>
+          <div className="form-grid llm-form">
+            <input value={llmDraft.baseUrl} onChange={(event) => setLlmDraft({ ...llmDraft, baseUrl: event.target.value })} placeholder="接口地址，如 https://api.deepseek.com 或 https://api.openai.com/v1" aria-label="模型接口地址" />
+            <input value={llmDraft.apiKey} type="password" onChange={(event) => setLlmDraft({ ...llmDraft, apiKey: event.target.value })} placeholder="API Key（只保存在本机浏览器，不上传服务器）" aria-label="模型 API Key" />
+            <input value={llmDraft.agentModel} onChange={(event) => setLlmDraft({ ...llmDraft, agentModel: event.target.value })} placeholder="对话模型，如 deepseek-v4-flash / gpt-4o-mini" aria-label="对话模型" />
+            <input value={llmDraft.visionModel} onChange={(event) => setLlmDraft({ ...llmDraft, visionModel: event.target.value })} placeholder="视觉模型，如 deepseek-v4-flash / gpt-4o" aria-label="视觉模型" />
+          </div>
+          <div className="data-actions">
+            <button
+              className="primary-button"
+              onClick={() => {
+                const normalized = normalizeLlmConfig(llmDraft);
+                if (!normalized) {
+                  setLlmMessage("保存失败：接口地址要填 http(s) 地址，API Key 至少 8 位。");
+                  return;
+                }
+                onSaveLlm(normalized);
+                setLlmMessage("已保存，之后的对话与识别都会用这套模型。");
+              }}
+            >
+              保存模型设置
+            </button>
+          </div>
+          <p className="settings-hint">
+            密钥只存在这台设备的浏览器里（换设备需要重新填一次）；不填就是现在的默认模型，照常可用。
+          </p>
+          {llmMessage ? <div className="queue-error inline">{llmMessage}</div> : null}
         </section>
 
         <section className="settings-card">

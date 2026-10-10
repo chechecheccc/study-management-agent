@@ -32,7 +32,7 @@ export type ModelFailure = {
 };
 
 /** 把上游状态码 + 错误说明映射成 { code, message, status } */
-export function describeModelFailure(status: number, detail: string): ModelFailure {
+export function describeModelFailure(status: number, detail: string, options?: { custom?: boolean }): ModelFailure {
   const text = (detail ?? "").toLowerCase();
   const balance = /insufficient\s*balance|insufficient_quota|exceeded your current quota|余额不足|quota/.test(text);
   const auth = status === 401 || status === 403 || /invalid.*api[\s_-]?key|authentication|unauthorized/.test(text);
@@ -41,14 +41,18 @@ export function describeModelFailure(status: number, detail: string): ModelFailu
   if (balance) {
     return {
       code: "MODEL_INSUFFICIENT_BALANCE",
-      message: "模型账户余额不足，请到 DeepSeek 控制台充值后再试（充值后无需改代码，刷新页面即可）。",
+      message: options?.custom
+        ? "你填写的模型账户余额不足，请到对应服务商控制台充值后再试（充值后无需改代码，刷新页面即可）。"
+        : "模型账户余额不足，请到 DeepSeek 控制台充值后再试（充值后无需改代码，刷新页面即可）。",
       status: 402,
     };
   }
   if (auth) {
     return {
       code: "MODEL_AUTH_FAILED",
-      message: "模型服务鉴权失败：API Key 可能已失效或被重置，请在 .env.local 里更新 DEEPSEEK_API_KEY。",
+      message: options?.custom
+        ? "你填写的 API Key 无效或已失效，请在「设置 → 模型」里检查一下（也可以点「恢复默认」用回内置模型）。"
+        : "模型服务鉴权失败：API Key 可能已失效或被重置，请在 .env.local 里更新 DEEPSEEK_API_KEY。",
       status: 502,
     };
   }
