@@ -74,6 +74,7 @@ type SessionUser = {
 import { runAgentLoop } from "./agent/loop";
 import type { ConfirmationDecision, HistoryMessage, ToolExecutionResult } from "./agent/loop";
 import type { AgentStepResponse, AgentToolCall, AgentWireMessage } from "./agent/protocol";
+import { safeSlice } from "./agent/protocol";
 import { getToolSpec } from "./agent/tools";
 import { extractSearchableText } from "./lib/content-extract";
 import { buildICalendar } from "./lib/ical";
@@ -907,7 +908,9 @@ export default function Home() {
         // 资料可能很长（一份章节 PDF 抽出来一两万字），一次只给一小段容易"没读到重点"，
         // 所以改成可以分段读，并把目录/页码结构一起给它。
         const content = resource.contentText;
-        const offset = Math.max(0, Math.round(Number(args.offset) || 0));
+        // 偏移量按字符给；下面的 safeSlice 保证不会把数学符号（UTF-16 代理对）切成一半
+        const rawOffset = Math.max(0, Math.round(Number(args.offset) || 0));
+        const offset = safeSlice(content, 0, rawOffset).length;
         const length = Math.min(8000, Math.max(1000, Math.round(Number(args.length) || 6000)));
         const end = Math.min(content.length, offset + length);
         const hasMore = end < content.length;
@@ -925,7 +928,7 @@ export default function Home() {
             hasMore,
             nextOffset: hasMore ? end : null,
             outline: offset === 0 ? buildResourceOutline(content) : null,
-            content: content.slice(offset, end),
+            content: safeSlice(content, offset, end),
           },
         };
       }
@@ -1225,7 +1228,7 @@ export default function Home() {
     );
   };
 
-  const runAgent = async (goal: string, goalImages: string[] = [], options?: { background?: boolean }) => {
+  const runAgent = async (goal: string, goalImages: string[] = [], options?: { background?: boolean; maxSteps?: number }) => {
     if (agentRunningRef.current) return;
     agentRunningRef.current = true;
     setAgentRunning(true);
@@ -1243,7 +1246,7 @@ export default function Home() {
         step: requestAgentStep,
         execute: executeAgentTool,
         requestConfirmation: requestToolConfirmation,
-        maxSteps: 8,
+        maxSteps: options?.maxSteps ?? 8,
       })) {
         if (event.type === "tool_call") {
           const spec = getToolSpec(event.call.name);
@@ -1474,7 +1477,8 @@ export default function Home() {
     reviewAvailabilityRef.current = availability;
     reviewDeadlineRef.current = Number.isNaN(exam.getTime()) ? null : exam.getTime();
     reviewPlanArrivedRunRef.current = 0;
-    await runAgent(goal);
+    // 排计划要先读资料（长课件要分几次读）再提交，8 步经常不够——给到 18 步
+    await runAgent(goal, [], { maxSteps: 18 });
     if (reviewRunIdRef.current !== runId) return; // 这一轮已经被新的一轮接管了
     reviewTargetCourseRef.current = "";
     reviewAvailabilityRef.current = "";
@@ -4059,7 +4063,7 @@ const PROACTIVE_KEY = "study-agent-proactive-date";
 function buildResourceOutline(contentText: string) {
   const pages = [...contentText.matchAll(/第(\d+)页[：:]\s*([^\n]{0,48})/g)];
   if (pages.length >= 3) {
-    return pages.slice(0, 30).map((match) => `第${match[1]}页：${match[2].trim()}`).join("\n");
+    return pages.slice(0, 30).map((match) => `第${match[1]}页：${safeSlice(match[2].trim(), 0, 48)}`).join("\n");
   }
   const headings = contentText
     .split("\n")

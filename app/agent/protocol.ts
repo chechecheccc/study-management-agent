@@ -41,6 +41,45 @@ export const MAX_IMAGE_DATA_CHARS = 12_000_000;
 export const MAX_MESSAGE_CHARS = 8000;
 export const MAX_TOOL_RESULT_CHARS = 4000;
 
+/**
+ * 按字符数截断，但绝不把一个"代理对"切成孤立的一半。
+ *
+ * 为什么必须这样：PDF 抽出来的数学符号（𝑢 𝐿 𝑥 这类）在 JS 里是 UTF-16 代理对啊，
+ * 直接 slice 可能只留下高位代理；JSON.stringify 会写成 \uD835（后面没有低位代理），
+ * DeepSeek 的 JSON 解析器遇到这种孤立代理会直接 400：
+ * "Failed to parse the request body as JSON: unexpected end of hex escape"。
+ */
+export function safeSlice(text: string, start: number, end?: number): string {
+  let from = Math.max(0, start);
+  let to = typeof end === "number" ? Math.min(text.length, end) : text.length;
+  if (from > 0 && from < text.length) {
+    const previous = text.charCodeAt(from - 1);
+    const current = text.charCodeAt(from);
+    if (previous >= 0xd800 && previous <= 0xdbff && current >= 0xdc00 && current <= 0xdfff) from -= 1;
+  }
+  if (to > 0 && to < text.length) {
+    const before = text.charCodeAt(to - 1);
+    if (before >= 0xd800 && before <= 0xdbff) to -= 1;
+  }
+  if (to < from) to = from;
+  return text.slice(from, to);
+}
+
+/**
+ * 兜底：把 JSON 文本里"孤立代理"的转义替换成 ，避免上游 JSON 解析器直接 400。
+ *
+ * 场景：任何地方的截断（按字数切、正则 {0,48} 切）都可能只留下半个数学符号，
+ * JSON.stringify 会写成 \uD835 但没有配对的低位代理，DeepSeek 会报
+ * "unexpected end of hex escape"。与其到处补，不如发送前统一兜一下。
+ */
+export function stripLoneSurrogateEscapes(json: string): string {
+  return json
+    // 高位代理：没有紧跟成对的低位代理 → 换成替换字符（注意 JSON.stringify 用小写十六进制）
+    .replace(/\\u(d[89ab][0-9a-f]{2})(?!\\udc[0-9a-f]{2})/gi, "\\ufffd")
+    // 低位代理：前面不是成对的高位代理 → 同样换掉
+    .replace(/(?<!\\ud[89ab][0-9a-f]{2})\\u(d[c-f][0-9a-f]{2})/gi, "\\ufffd");
+}
+
 export function sanitizeAgentMessages(value: unknown): AgentWireMessage[] {
   if (!Array.isArray(value)) return [];
   const messages: AgentWireMessage[] = [];
@@ -106,19 +145,19 @@ function sanitizeWireToolCall(value: unknown): AgentWireToolCall | null {
     type: "function",
     function: {
       name: name.slice(0, 80),
-      arguments: typeof value.function.arguments === "string" ? value.function.arguments.slice(0, MAX_TOOL_RESULT_CHARS) : "{}",
+      arguments: typeof value.function.arguments === "string" ? safeSlice(value.function.arguments, 0, MAX_TOOL_RESULT_CHARS) : "{}",
     },
   };
 }
 
 function cleanContent(value: unknown, max: number) {
-  return typeof value === "string" ? value.slice(0, max) : "";
+  return typeof value === "string" ? safeSlice(value, 0, max) : "";
 }
 
 // 内容可以是纯文本，也可以是"文本 + 图片"片段数组。
 // 只有 user 角色允许带图片；图片必须是 data:image/* 的 base64，且有大小与数量上限。
 function sanitizeContent(value: unknown, role: string): AgentWireContent {
-  if (typeof value === "string") return value.slice(0, MAX_MESSAGE_CHARS);
+  if (typeof value === "string") return safeSlice(value, 0, MAX_MESSAGE_CHARS);
   if (!Array.isArray(value)) return "";
   // 非用户角色不支持图片：只保留其中的文本片段，避免把可用内容整条丢掉
   if (role !== "user") {
@@ -135,7 +174,7 @@ function sanitizeContent(value: unknown, role: string): AgentWireContent {
   for (const item of value) {
     if (!isRecord(item)) continue;
     if (item.type === "text" && typeof item.text === "string") {
-      const text = item.text.slice(0, MAX_MESSAGE_CHARS);
+      const text = safeSlice(item.text, 0, MAX_MESSAGE_CHARS);
       if (text) parts.push({ type: "text", text });
       continue;
     }

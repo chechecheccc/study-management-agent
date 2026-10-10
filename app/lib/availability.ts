@@ -141,7 +141,7 @@ export function fitSessionsToAvailability(
     if (startMinutes !== null) {
       const slot = Math.max(30, duration + 15);
       let placed = false;
-      for (let attempt = 0; attempt < 20 && !placed; attempt += 1) {
+      for (let attempt = 0; attempt < 24 && !placed; attempt += 1) {
         if (allowed && !allowed.has(date.getDay())) {
           date = nextAllowedDay(date, allowed);
           continue;
@@ -149,14 +149,22 @@ export function fitSessionsToAvailability(
         const key = dayKey(date);
         const index = usedPerDay.get(key) ?? 0;
         const offset = startMinutes + index * slot;
+        const timed = new Date(date);
+        timed.setHours(Math.floor(offset / 60), offset % 60, 0, 0);
+
+        // 今天这个时段已经过去了 → 顺延到下一个允许的日子，别一生成就是"已逾期"
+        if (timed.getTime() < Date.now() - 5 * 60_000) {
+          date = new Date(date);
+          date.setDate(date.getDate() + 1);
+          continue;
+        }
+        // 当天窗口塞不下 → 也顺延
         if (endMinutes !== null && offset + duration > endMinutes + 15) {
           date = new Date(date);
           date.setDate(date.getDate() + 1);
           continue;
         }
         usedPerDay.set(key, index + 1);
-        const timed = new Date(date);
-        timed.setHours(Math.floor(offset / 60), offset % 60, 0, 0);
         if (timed.getHours() !== original.getHours() || timed.getMinutes() !== original.getMinutes() || dayKey(timed) !== dayKey(original)) {
           moved += 1;
         }

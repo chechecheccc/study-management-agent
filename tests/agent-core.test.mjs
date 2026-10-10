@@ -212,8 +212,56 @@ test("记忆与提示词：画像注入系统提示词", () => {
 // ---------- Sprint 4：完整能力测试 ----------
 
 import { parseReminderOffsets, computeDueReminders, formatMinutesLeft } from "../app/agent/reminders.ts";
+import { safeSlice, stripLoneSurrogateEscapes } from "../app/agent/protocol.ts";
 import { buildICalendar } from "../app/lib/ical.ts";
 import { addProfileNote } from "../app/agent/memory.ts";
+
+test("截断不会切开代理对：PDF 里的数学符号不再让模型请求 400", () => {
+  // 𝑢 是 U+1D462，在 JS 里是两个码元（代理对）
+  const text = "公式：" + "𝑢" + "的最优性";
+  // 正好切在代理对中间的边界
+  const splitPoint = 3 + 1; // "公式：" 3 个字符 + 半个 𝑢
+  const cut = safeSlice(text, 0, splitPoint);
+  assert.equal(cut, "公式：");
+  assert.ok(!/\uD800-\uDBFF$/.test(JSON.stringify(cut)));
+
+  // 起点落在低位代理上时要回退到代理对开头
+  const fromMiddle = safeSlice(text, 4, 5);
+  assert.equal(fromMiddle, "𝑢");
+
+  // 正常文本不受影响
+  assert.equal(safeSlice("abcdef", 1, 4), "bcd");
+  assert.equal(safeSlice("abcdef", 2), "cdef");
+
+  // 走一遍真实的清洗流程：工具结果里塞满数学符号也不该留下孤立代理
+  const content = JSON.stringify({ ok: true, summary: "读了资料", data: { content: "𝑢".repeat(4000) } });
+  const cleaned = sanitizeAgentMessages([
+    { role: "tool", tool_call_id: "c1", content },
+  ]);
+  const wire = cleaned[0];
+  const payload = typeof wire.content === "string" ? wire.content : "";
+  assert.ok(payload.length > 0);
+  // 序列化后再解析，能过就说明没有孤立代理（DeepSeek 就是卡在这一步）
+  assert.doesNotThrow(() => JSON.parse(JSON.stringify({ messages: cleaned })));
+  assert.ok(!/\uD800-\uDBFF$/.test(JSON.stringify(payload)));
+});
+
+test("发送前的孤立代理兜底：JSON 文本里的半截数学符号会被替换掉", () => {
+  // 真正意义上的"孤立代理"字符（数学符号被切一半的结果）
+  const loneText = "abc" + String.fromCharCode(0xd835);
+  const json = JSON.stringify({ messages: [{ role: "tool", content: { data: { content: loneText } } }] });
+  // JSON.stringify 会把它写成 \ud835，DeepSeek 收到这种转义会直接 400
+  assert.match(json, /\\ud835/i);
+
+  const fixed = stripLoneSurrogateEscapes(json);
+  assert.doesNotMatch(fixed, /\\ud835/i);
+  assert.doesNotThrow(() => JSON.parse(fixed));
+
+  // 成对的代理（正常数学符号 𝑢）必须原样保留
+  const paired = JSON.stringify({ content: "𝑢" });
+  assert.equal(stripLoneSurrogateEscapes(paired), paired);
+  assert.equal(JSON.parse(stripLoneSurrogateEscapes(paired)).content, "𝑢");
+});
 
 test("Sprint 4 工具注册表：内容阅读、记忆笔记、任务修改", () => {
   assert.ok(getToolSpec("read_resource"));
@@ -646,6 +694,16 @@ test("复习计划必须落在用户方便的时间：选了周末上午就不�
   assert.equal(past.sessions.length, 1);
   assert.ok(new Date(past.sessions[0].date).getTime() > Date.now() - 86_400_000);
   assert.match(adjustment, /重新对齐/);
+
+  // 今天已经过去的时间段要顺延，不能生成出来就是"已逾期"
+  const pastSlot = fitSessionsToAvailability(
+    [{ date: new Date().toISOString(), title: "今天很早的安排", durationMinutes: 60 }],
+    availability,
+    new Date(Date.now() + 30 * 86_400_000).getTime(),
+  );
+  if (pastSlot.sessions.length) {
+    assert.ok(new Date(pastSlot.sessions[0].date).getTime() > Date.now(), "不应该排到已经过去的时间");
+  }
 
   // 排不进时间窗（超过考试时间）就明确去掉并说明
   const late = fitSessionsToAvailability(

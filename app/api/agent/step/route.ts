@@ -1,7 +1,7 @@
 // Agent 单步代理：接收对话消息，调用 DeepSeek function calling，返回规范化的
 // "一步"结果（文本回复或工具调用）。Agent 循环的驱动在客户端，本路由无状态。
 // 密钥只存在于服务端环境变量，与 /api/ai/extract 同一套安全约定。
-import { sanitizeAgentContext, sanitizeAgentMessages } from "../../../agent/protocol";
+import { sanitizeAgentContext, sanitizeAgentMessages, stripLoneSurrogateEscapes } from "../../../agent/protocol";
 import type { AgentToolCall } from "../../../agent/protocol";
 import { buildAgentSystemPrompt } from "../../../agent/prompts";
 import { toolSchemasForModel } from "../../../agent/tools";
@@ -72,13 +72,8 @@ export async function POST(request: Request) {
   const timeout = setTimeout(() => controller.abort(), TIMEOUT_MS);
 
   try {
-    const upstream = await fetch(process.env.DEEPSEEK_API_URL?.trim() || DEFAULT_ENDPOINT, {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
+    // 发送前清一遍孤立代理：只要有一个，DeepSeek 就会整条请求 400
+    const payload = stripLoneSurrogateEscapes(JSON.stringify({
         model,
         messages: [
           { role: "system", content: buildAgentSystemPrompt(context) },
@@ -89,8 +84,16 @@ export async function POST(request: Request) {
         // 同理：不设 max_tokens 时，关闭思考可保证工具调用一定能输出完整 JSON。
         thinking: { type: process.env.DEEPSEEK_AGENT_THINKING?.trim() === "enabled" ? "enabled" : "disabled" },
         temperature: 0.3,
-        stream: false,
-      }),
+      stream: false,
+    }));
+
+    const upstream = await fetch(process.env.DEEPSEEK_API_URL?.trim() || DEFAULT_ENDPOINT, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: payload,
       signal: controller.signal,
     });
 
