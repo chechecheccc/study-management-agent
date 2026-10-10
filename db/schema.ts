@@ -116,6 +116,8 @@ export const tasks = pgTable(
     resourceId: text("resource_id"),
     /** 用户自己选择上传的任务附图（data URL） */
     images: jsonb("images").$type<string[]>().notNull().default([]),
+    /** 详细计划 / 复习路线（纯文本，换行分隔） */
+    detail: text("detail"),
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
   },

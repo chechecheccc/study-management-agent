@@ -71,6 +71,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
         dueAt: { type: "string", description: "ISO 8601 截止时间，例如 2026-09-10T20:00:00+08:00" },
         priority: { type: "string", enum: ["高", "中", "低"], description: "缺省为 中" },
         reminder: { type: "string", description: "提醒规则，缺省为 提前3天、1天、2小时" },
+        detail: { type: "string", description: "任务的详细计划/要点（可选，多行文本）" },
       },
       required: ["title", "courseName", "type", "dueAt"],
       additionalProperties: false,
@@ -111,7 +112,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
     name: "save_review_plan",
     label: "保存复习计划",
     description:
-      "保存一份复习计划：每个 session 会被创建为一条「复习」任务。调用前先用 list_tasks 和 search_resources 了解真实进度；同一门课的安排按日期从早到晚排好、不要重复同一天；能指出每次用哪份资料就填 resourceName。调用后系统会向用户展示计划草案，确认后才写入。",
+      "保存一份复习计划：每个 session 会被创建为一条「复习」任务。调用前先用 list_tasks 和 search_resources 了解真实进度，并且**用 read_resource 真正读一遍这门课的关键资料**（长资料可以分次读）；安排要落到资料里的具体章节/知识点，时长按资料难度定（难点 90 分钟、一般 60、轻量 45），按日期从早到晚排好、不要重复同一天。每次都要给出详细计划：focus（这次的重点）+ route（具体怎么走）+ checkpoint（怎么自测），并填 resourceName。调用后系统会向用户展示计划草案，确认后才写入。",
     parameters: {
       type: "object",
       properties: {
@@ -127,6 +128,18 @@ export const AGENT_TOOLS: ToolSpec[] = [
               resourceName: {
                 type: "string",
                 description: "这次复习要用到的资料标题（从 search_resources 的结果里取，没有就省略）",
+              },
+              focus: {
+                type: "string",
+                description: "这次的重点：复习资料里的哪些概念/章节，为什么是重点（读过资料后写）",
+              },
+              route: {
+                type: "string",
+                description: "复习路线：先做什么再做什么，例如「先过一遍 5-12 页定义 → 重做例题 → 整理易错点」",
+              },
+              checkpoint: {
+                type: "string",
+                description: "自测标准：怎么算这次复习到位了，例如「能不看答案默写 KKT 条件并解一道例题」",
               },
             },
             required: ["date", "title", "durationMinutes"],
@@ -160,11 +173,13 @@ export const AGENT_TOOLS: ToolSpec[] = [
     name: "read_resource",
     label: "阅读资料",
     description:
-      "阅读某份资料的正文内容（入库时从 PDF / Word / PPT 提取的文本）。按标题模糊匹配。回答资料内容相关问题（概念解释、老师怎么讲的）前必须先调用，禁止编造内容。",
+      "阅读某份资料的正文内容（入库时从 PDF / Word / PPT 提取的文本）。按标题模糊匹配。回答资料内容相关问题、制定复习计划前必须先调用，禁止编造内容。资料较长时可以分段读：返回里会给出 totalLength / hasMore / nextOffset 和 outline（页码或小标题目录），据此继续读下一段，直到读完关键部分。",
     parameters: {
       type: "object",
       properties: {
         title: { type: "string", description: "资料标题，模糊匹配" },
+        offset: { type: "number", description: "从第几个字开始读，默认 0；接着读时传上一次返回的 nextOffset" },
+        length: { type: "number", description: "本次读取多少字，默认 6000，最大 8000" },
       },
       required: ["title"],
       additionalProperties: false,
@@ -198,6 +213,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
         title: { type: "string", description: "新标题，可选" },
         dueAt: { type: "string", description: "新的截止时间，ISO 8601，可选" },
         priority: { type: "string", enum: ["高", "中", "低"], description: "可选" },
+        detail: { type: "string", description: "把任务的详细计划/要点改成这段文字（可选）" },
         type: { type: "string", enum: ["DDL", "考试", "复习"], description: "可选" },
         reminder: { type: "string", description: "提醒规则，例如 提前3天、1天、2小时" },
       },

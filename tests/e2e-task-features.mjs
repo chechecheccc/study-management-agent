@@ -95,6 +95,10 @@ try {
   // 5) 附图
   await page.locator(".task-attach-row input[type=file]").setInputFiles(IMAGE);
   await page.waitForTimeout(1500);
+
+  // 详细计划：重点 / 路线 / 自测
+  await page.locator(".task-detail-field textarea").fill("【重点】第一章 引言里的相似理论\n【路线】先读 1-10 页 → 做课后题\n【自测】能复述三种相似");
+  check("新建任务可以填详细计划", (await page.locator(".task-detail-field textarea").inputValue()).includes("相似理论"));
   const thumbs = await page.locator(".task-attach-row .task-attach-thumb").count();
   check("可以选择附带图片", thumbs >= 1, `缩略图=${thumbs}`);
 
@@ -105,6 +109,13 @@ try {
   const createdRowText = ((await page.locator(".task-row", { hasText: taskTitle }).first().textContent()) ?? "").replace(/\s+/g, " ");
   check("提醒写入了自定义值", /45分钟/.test(createdRowText), createdRowText.slice(0, 90));
   check("任务显示了附图入口", pageText.includes("查看图片") && /查看图片/.test(createdRowText), "");
+
+  // 列表里展开详细计划
+  check("任务行有「详细计划」入口", /详细计划/.test(createdRowText));
+  await page.locator(".task-row", { hasText: taskTitle }).first().getByRole("button", { name: "详细计划" }).click();
+  await page.waitForTimeout(600);
+  const detailText = ((await page.locator(".task-detail-body").first().textContent()) ?? "").replace(/\s+/g, " ");
+  check("详细计划能展开看到重点/路线/自测", /相似理论/.test(detailText) && /路线/.test(detailText) && /自测/.test(detailText), detailText.slice(0, 80));
 
   // 1) 现在同时有未逾期和已逾期，检查分组顺序
   const labels = await groupLabels();
@@ -119,6 +130,12 @@ try {
   await page.waitForTimeout(900);
   const mediaPanel = page.locator(".task-media-panel");
   check("编辑态左侧有附图入口", await mediaPanel.isVisible().catch(() => false));
+  const editDetail = page.locator('textarea[aria-label="详细计划"]');
+  check("编辑态可以修改详细计划", await editDetail.isVisible().catch(() => false));
+  if (await editDetail.isVisible().catch(() => false)) {
+    await editDetail.fill("【重点】改过的重点\n【路线】重读第 2 章");
+    await page.waitForTimeout(400);
+  }
   check("编辑态能读回自定义提醒", (await page.locator('input[aria-label="自定义提醒数值"]').inputValue().catch(() => "")) === "45", "自定义数值");
   const mediaThumb = mediaPanel.locator(".thumb-button").first();
   check("编辑态能看到附图缩略图", await mediaThumb.isVisible().catch(() => false));

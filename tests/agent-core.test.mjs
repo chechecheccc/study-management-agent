@@ -549,6 +549,8 @@ import {
   fitSessionsToAvailability,
 } from "../app/lib/availability.ts";
 import {
+  formatSessionDetail,
+  hasSessionDetail,
   parsePlanTimestamp,
   sanitizePlanSessions,
   planSummary,
@@ -653,6 +655,37 @@ test("复习计划必须落在用户方便的时间：选了周末上午就不�
   );
   assert.equal(late.sessions.length, 0);
   assert.match(late.adjustment, /已去掉/);
+});
+
+test("复习计划的详细计划：重点 / 路线 / 自测会保留并拼成任务详情", () => {
+  const sessions = sanitizePlanSessions([
+    {
+      date: "10/12",
+      title: "第二章：连续优化",
+      durationMinutes: 60,
+      resourceName: "第二章连续最优化课件",
+      focus: "凸函数判定与 KKT 条件",
+      route: "先过定义 → 重做课件例题 → 整理易错点",
+      checkpoint: "不看答案默写 KKT 条件并解一道例题",
+    },
+  ]);
+  assert.equal(sessions.length, 1);
+  assert.equal(sessions[0].focus, "凸函数判定与 KKT 条件");
+  assert.equal(hasSessionDetail(sessions[0]), true);
+
+  const detail = formatSessionDetail(sessions[0]);
+  assert.match(detail, /【重点】凸函数判定与 KKT 条件/);
+  assert.match(detail, /【复习路线】/);
+  assert.match(detail, /【自测】/);
+  assert.match(detail, /【资料】第二章连续最优化课件/);
+
+  // 没有详细计划的安排就是普通的
+  assert.equal(hasSessionDetail({ date: "2026-10-12T11:00:00.000Z", title: "裸安排", durationMinutes: 30 }), false);
+  assert.equal(formatSessionDetail({ date: "2026-10-12T11:00:00.000Z", title: "裸安排", durationMinutes: 30 }), "");
+
+  // 过长的字段会被截断，避免一条任务塞几千字
+  const long = sanitizePlanSessions([{ date: "10/12", title: "长", durationMinutes: 60, route: "x".repeat(900) }]);
+  assert.ok(long[0].route.length <= 400);
 });
 
 test("今天判定与提醒规则组合", () => {

@@ -59,7 +59,7 @@ import { LoginScreen } from "./components/login-screen";
 import { AccountPanel } from "./components/account-panel";
 import { applyPresets, isPresetCourseId, isPresetResourceId } from "./lib/presets";
 import { fitSessionsToAvailability, parseAvailability } from "./lib/availability";
-import { formatPlanDate, planSummary, sanitizePlanSessions } from "./lib/review-plan";
+import { formatPlanDate, formatSessionDetail, hasSessionDetail, planSummary, sanitizePlanSessions } from "./lib/review-plan";
 import type { PlanSession } from "./lib/review-plan";
 
 import type { PublicAccount } from "./lib/accounts";
@@ -110,6 +110,8 @@ type TaskConfirmDraft = {
   dueAt: string;
   priority: Task["priority"];
   reminder: string;
+  /** 详细计划（模型叫 update_task 时会带上） */
+  detail?: string;
 };
 
 type PlanConfirmState = {
@@ -220,6 +222,7 @@ export default function Home() {
   const [taskReminder, setTaskReminder] = useState("提前1天");
   const [taskResourceId, setTaskResourceId] = useState("");
   const [taskImages, setTaskImages] = useState<string[]>([]);
+  const [taskDetail, setTaskDetail] = useState("");
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
   // 管理员面板用的服务端账号列表
   const [accounts, setAccounts] = useState<PublicAccount[]>([]);
@@ -901,14 +904,28 @@ export default function Home() {
         if (!resource.contentText) {
           return { ok: true, summary: `「${resource.title}」没有已提取的正文内容（可能是手动卡片或尚未入库原文件）。`, data: { title: resource.title, hasContent: false } };
         }
+        // 资料可能很长（一份章节 PDF 抽出来一两万字），一次只给一小段容易"没读到重点"，
+        // 所以改成可以分段读，并把目录/页码结构一起给它。
+        const content = resource.contentText;
+        const offset = Math.max(0, Math.round(Number(args.offset) || 0));
+        const length = Math.min(8000, Math.max(1000, Math.round(Number(args.length) || 6000)));
+        const end = Math.min(content.length, offset + length);
+        const hasMore = end < content.length;
         return {
           ok: true,
-          summary: `已阅读「${resource.title}」`,
+          summary: hasMore
+            ? `已阅读「${resource.title}」第 ${offset + 1}-${end} 字（全文 ${content.length} 字，还有后续）`
+            : `已读完「${resource.title}」（共 ${content.length} 字）`,
           data: {
             title: resource.title,
             course: courseNameOf(resource.courseId),
             type: resource.type,
-            content: resource.contentText.slice(0, 3000),
+            totalLength: content.length,
+            offset,
+            hasMore,
+            nextOffset: hasMore ? end : null,
+            outline: offset === 0 ? buildResourceOutline(content) : null,
+            content: content.slice(offset, end),
           },
         };
       }
@@ -995,6 +1012,7 @@ export default function Home() {
           status: "未开始",
           priority: (["高", "中", "低"].includes(asString(args.priority)) ? asString(args.priority) : "中") as Task["priority"],
           reminder: asString(args.reminder).trim() || "提前3天、1天、2小时",
+          ...(asString(args.detail).trim() ? { detail: asString(args.detail).trim().slice(0, 4000) } : {}),
         };
         setSnapshot((current) => ({ ...current, tasks: [task, ...current.tasks] }));
         return { ok: true, summary: `已创建${type}「${title}」，截止 ${formatDate(task.dueAt)}` };
@@ -1026,6 +1044,7 @@ export default function Home() {
         const courseLabel = courseNameOf(courseId) || asString(args.courseName) || "未分类";
         const tasks: Task[] = sessions.map((session) => {
           const resourceId = session.resourceName ? resolveResourceId(session.resourceName) : "";
+          const detail = formatSessionDetail(session);
           return {
             id: makeId("task"),
             title: session.title,
@@ -1036,6 +1055,7 @@ export default function Home() {
             priority: "中",
             reminder: "提前2小时",
             ...(resourceId ? { resourceId } : {}),
+            ...(detail ? { detail } : {}),
           };
         });
         setSnapshot((current) => ({ ...current, tasks: [...tasks, ...current.tasks] }));
@@ -1165,6 +1185,7 @@ export default function Home() {
           type: taskConfirmDraft.type,
           dueAt: new Date(taskConfirmDraft.dueAt).toISOString(),
           priority: taskConfirmDraft.priority,
+          ...(taskConfirmDraft.detail ? { detail: taskConfirmDraft.detail } : {}),
         },
       });
       return;
@@ -1178,6 +1199,7 @@ export default function Home() {
         dueAt: new Date(taskConfirmDraft.dueAt).toISOString(),
         priority: taskConfirmDraft.priority,
         reminder: taskConfirmDraft.reminder,
+        ...(taskConfirmDraft.detail ? { detail: taskConfirmDraft.detail } : {}),
       },
     });
   };
@@ -1441,8 +1463,9 @@ export default function Home() {
       `请为「${courseName || "未分类课程"}」制定复习计划。`,
       `考试或目标时间：${Number.isNaN(exam.getTime()) ? examAt : exam.toISOString()}。`,
       `我方便学习的时间（硬性要求，所有安排都必须落在这个范围里，不要排到其它星期或其它时段）：${availability || "未说明"}。`,
-      "请先调用工具查询该课程的未完成任务与已有资料，再把计划拆成具体到天、每次 30-90 分钟的可执行安排；" +
-        "每次安排都写清这次要用哪份资料（sessions[].resourceName 填资料标题），所有安排必须早于考试时间。" +
+      "请先 list_tasks / search_resources 了解现状，再用 read_resource 真正把这门课的关键资料读完（长资料按返回的 nextOffset 分次读完，别只看开头），" +
+      "然后按资料里的章节、知识点和难度拆成具体到天的安排（难点 90 分钟、一般 60 分钟、轻量 45 分钟）；" +
+        "每次安排都要写清：resourceName（用哪份资料）、focus（哪些内容是重点、为什么）、route（先做什么再做什么的路线）、checkpoint（怎么自测才算过关）；所有安排必须早于考试时间。" +
         "最后必须调用 save_review_plan 把计划结构化提交（不要只在回复里用文字列计划，也不要再反问用户；信息不足就按合理默认值排，并在标题里写明假设）。" +
         "如果这门课任务和资料都很少，也按主题/章节排一份通用复习节奏。",
     ].join("");
@@ -1982,6 +2005,7 @@ export default function Home() {
       priority: taskPriority,
       reminder: taskReminder || "提前1天",
       ...(taskResourceId ? { resourceId: taskResourceId } : {}),
+      ...(taskDetail.trim() ? { detail: taskDetail.trim().slice(0, 4000) } : {}),
       ...(taskImages.length ? { images: taskImages } : {}),
     };
     setSnapshot((current) => ({ ...current, tasks: [task, ...current.tasks] }));
@@ -1990,6 +2014,7 @@ export default function Home() {
     setTaskReminder("提前1天");
     setTaskResourceId("");
     setTaskImages([]);
+    setTaskDetail("");
     setTaskPriority("中");
     setTaskType("DDL");
     setTaskDueAt(defaultTaskDueAt());
@@ -2471,6 +2496,8 @@ export default function Home() {
               setResourceId={setTaskResourceId}
               images={taskImages}
               setImages={setTaskImages}
+              detail={taskDetail}
+              setDetail={setTaskDetail}
               resources={snapshot.resources}
               onCreateCourse={createCourse}
               onCreate={createTask}
@@ -2896,6 +2923,13 @@ function PlanConfirmCard({ plan, error, onApprove, onReject }: { plan: PlanConfi
             <div>
               <strong>{session.title}</strong>
               <span>{session.resourceName ? `用这份资料：${session.resourceName}` : "将创建为复习任务"}</span>
+              {hasSessionDetail(session) ? (
+                <div className="plan-item-detail">
+                  {session.focus ? <p><b>重点</b>{session.focus}</p> : null}
+                  {session.route ? <p><b>路线</b>{session.route}</p> : null}
+                  {session.checkpoint ? <p><b>自测</b>{session.checkpoint}</p> : null}
+                </div>
+              ) : null}
             </div>
             <b>{session.durationMinutes}分钟</b>
           </div>
@@ -3304,7 +3338,7 @@ function defaultTaskDueAt() {
 function TasksView({
   tasks, courseMap, courses, resources, showForm, setShowForm, title, setTitle, courseId, setCourseId,
   dueAt, setDueAt, taskType, setTaskType, priority, setPriority, reminder, setReminder,
-  resourceId, setResourceId, images, setImages,
+  resourceId, setResourceId, images, setImages, detail, setDetail,
   onCreate, onComplete, onDelete, onUpdate, onOpenResource, onCreateCourse,
 }: {
   tasks: Task[];
@@ -3329,6 +3363,8 @@ function TasksView({
   setResourceId: (value: string) => void;
   images: string[];
   setImages: (value: string[]) => void;
+  detail: string;
+  setDetail: (value: string) => void;
   onCreate: () => void;
   onComplete: (id: string) => void;
   onDelete: (id: string) => void;
@@ -3343,6 +3379,8 @@ function TasksView({
   const [editingId, setEditingId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
   const [viewing, setViewing] = useState<{ images: string[]; index: number } | null>(null);
+  // 展开"详细计划"的任务 id
+  const [openDetailId, setOpenDetailId] = useState<string | null>(null);
   const [imageError, setImageError] = useState("");
 
   const decorated = tasks.map((task) => ({ task, status: deriveTaskStatus(task, now) }));
@@ -3453,6 +3491,14 @@ function TasksView({
             </label>
             {imageError ? <span className="queue-error inline">{imageError}</span> : null}
           </div>
+          <label className="task-detail-field">
+            <span>详细计划（可选）：这次的重点、先做什么、怎么自测</span>
+            <textarea
+              value={detail}
+              onChange={(event) => setDetail(event.target.value)}
+              placeholder={"【重点】第2章 凸函数判定、KKT 条件\n【路线】先过一遍定义 → 重做课件例题 → 整理易错点\n【自测】不看答案默写 KKT 条件"}
+            />
+          </label>
         </div>
       ) : null}
 
@@ -3587,6 +3633,13 @@ function TasksView({
                         onChange={(next) => onUpdate(task.id, { reminder: next })}
                         className="task-edit-reminders"
                       />
+                      <textarea
+                        className="task-edit-detail"
+                        value={task.detail ?? ""}
+                        onChange={(event) => onUpdate(task.id, { detail: event.target.value })}
+                        placeholder={"详细计划：重点 / 复习路线 / 自测标准\n例如：【重点】KKT 条件与罚函数法\n【路线】定义 → 例题 → 错题\n【自测】解一道约束优化题"}
+                        aria-label="详细计划"
+                      />
                       <div className="task-edit-actions">
                         <button className="quiet-button" onClick={() => setEditingId(null)}>完成编辑</button>
                       </div>
@@ -3599,7 +3652,21 @@ function TasksView({
                       {courseMap.get(task.courseId)?.name ?? "未分类"} · {task.type} · {task.reminder}
                       {linked ? <> · <button className="text-button inline" onClick={() => onOpenResource(linked.id)}>查看资料：{linked.title}</button></> : null}
                       {taskImages.length ? <> · <button className="text-button inline" onClick={() => openImages(taskImages, 0)}>查看图片（{taskImages.length}）</button></> : null}
+                      {task.detail ? (
+                        <>
+                          {" · "}
+                          <button
+                            className="text-button inline"
+                            onClick={() => setOpenDetailId((current) => (current === task.id ? null : task.id))}
+                          >
+                            {openDetailId === task.id ? "收起详细计划" : "详细计划"}
+                          </button>
+                        </>
+                      ) : null}
                     </span>
+                    {task.detail && openDetailId === task.id ? (
+                      <div className="task-detail-body">{task.detail}</div>
+                    ) : null}
                   </div>
                 )}
                 {!editing ? <time className={status === "已逾期" ? "overdue" : ""}>{formatDate(task.dueAt)}</time> : null}
@@ -3738,6 +3805,9 @@ function ReviewView({
                     title={session.title}
                     duration={`${session.durationMinutes}分钟`}
                     note={session.resourceName ? `用这份资料：${session.resourceName}` : "将创建为复习任务"}
+                    focus={session.focus}
+                    route={session.route}
+                    checkpoint={session.checkpoint}
                   />
                 ))}
               </div>
@@ -3793,13 +3863,29 @@ function ReviewView({
   );
 }
 
-function PlanItem({ date, title, duration, note }: { date: string; title: string; duration: string; note?: string }) {
+function PlanItem({ date, title, duration, note, focus, route, checkpoint }: {
+  date: string;
+  title: string;
+  duration: string;
+  note?: string;
+  focus?: string;
+  route?: string;
+  checkpoint?: string;
+}) {
+  const detailed = Boolean(focus || route || checkpoint);
   return (
     <div className="plan-item">
       <time>{date}</time>
       <div>
         <strong>{title}</strong>
         {note ? <span>{note}</span> : null}
+        {detailed ? (
+          <div className="plan-item-detail">
+            {focus ? <p><b>重点</b>{focus}</p> : null}
+            {route ? <p><b>路线</b>{route}</p> : null}
+            {checkpoint ? <p><b>自测</b>{checkpoint}</p> : null}
+          </div>
+        ) : null}
       </div>
       <b>{duration}</b>
     </div>
@@ -3968,6 +4054,19 @@ function scopedLocalKey(base: string, userId: string | null) {
 }
 
 const PROACTIVE_KEY = "study-agent-proactive-date";
+
+/** 从抽取正文里抽出"目录感"的结构（页码 / 小标题），帮模型快速定位重点 */
+function buildResourceOutline(contentText: string) {
+  const pages = [...contentText.matchAll(/第(\d+)页[：:]\s*([^\n]{0,48})/g)];
+  if (pages.length >= 3) {
+    return pages.slice(0, 30).map((match) => `第${match[1]}页：${match[2].trim()}`).join("\n");
+  }
+  const headings = contentText
+    .split("\n")
+    .map((line) => line.trim())
+    .filter((line) => line.length >= 2 && line.length <= 28);
+  return headings.slice(0, 20).join("\n");
+}
 
 function contentExcerpt(contentText: string, keyword: string) {
   const text = contentText.replace(/\s+/g, " ").trim();

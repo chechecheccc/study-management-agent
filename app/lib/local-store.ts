@@ -52,6 +52,8 @@ export type Task = {
   resourceId?: string;
   /** 附带的图片（data URL，用户自己选择是否上传） */
   images?: string[];
+  /** 详细计划：这次要复习哪些重点、怎么走、怎么自测（复习计划会写进来） */
+  detail?: string;
   updatedAt?: string;
 };
 

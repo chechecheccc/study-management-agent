@@ -92,6 +92,7 @@ export async function POST(request: Request) {
         priority: String(item.priority ?? "中"),
         reminder: String(item.reminder ?? ""),
         resourceId: item.resourceId ? String(item.resourceId) : null,
+        detail: item.detail ? String(item.detail).slice(0, 4000) : null,
         // 任务附图：只收 data URL 字符串，最多 6 张，避免单条记录过大
         images: Array.isArray(item.images)
           ? (item.images as unknown[]).filter((value): value is string => typeof value === "string").slice(0, 6)

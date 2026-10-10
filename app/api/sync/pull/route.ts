@@ -69,6 +69,7 @@ export async function GET(request: Request) {
           reminder: row.reminder,
           resourceId: row.resourceId ?? undefined,
           images: row.images ?? [],
+          detail: row.detail ?? undefined,
           updatedAt: row.updatedAt,
           deletedAt: row.deletedAt,
         })),

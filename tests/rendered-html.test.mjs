@@ -140,7 +140,11 @@ test("GSAP motion layer is scoped, responsive, and reduced-motion aware", async 
   assert.match(page, /prefers-reduced-motion/);
   assert.match(page, /contextSafe/);
   assert.match(page, /scope: appRef/);
-  assert.match(page, /revertOnUpdate: true/);
+  assert.doesNotMatch(page, /revertOnUpdate: true/); // 整页动画不再回滚重播（否则做一件事整页会跳一下）
+  // 整页入场只依赖 view；卡片入场单独一段，并且只播没播过的
+  assert.match(page, /dependencies: \[view\],/);
+  assert.match(page, /dataset\.entered/);
+  assert.match(page, /\.view-surface \.page-view/);
   assert.match(css, /will-change: transform/);
   assert.match(css, /@media \(prefers-reduced-motion: reduce\)/);
 });

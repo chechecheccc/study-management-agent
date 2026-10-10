@@ -16,7 +16,28 @@ export type PlanSession = {
   durationMinutes: number;
   /** 这次复习要用到的那份资料（模型读过的课件/笔记） */
   resourceName?: string;
+  /** 这次的重点是什么、为什么重要（模型读过资料后给出） */
+  focus?: string;
+  /** 具体怎么走：先做什么、再做什么（复习路线） */
+  route?: string;
+  /** 怎么算复习到位了（自测 / 验收标准） */
+  checkpoint?: string;
 };
+
+/** 这次安排是不是带了"详细计划" */
+export function hasSessionDetail(session: PlanSession) {
+  return Boolean(session.focus || session.route || session.checkpoint);
+}
+
+/** 把详细计划拼成任务里保存的文本（任务中心会原样展示） */
+export function formatSessionDetail(session: PlanSession): string {
+  const lines: string[] = [];
+  if (session.focus) lines.push(`【重点】${session.focus}`);
+  if (session.route) lines.push(`【复习路线】${session.route}`);
+  if (session.checkpoint) lines.push(`【自测】${session.checkpoint}`);
+  if (session.resourceName) lines.push(`【资料】${session.resourceName}`);
+  return lines.join("\n");
+}
 
 /**
  * 解析模型给的日期。模型经常写成「10/10 今晚」「10月10日」「2026-10-10」这类，
@@ -72,11 +93,19 @@ export function sanitizePlanSessions(value: unknown): PlanSession[] {
       const resourceName = typeof record.resourceName === "string" && record.resourceName.trim()
         ? record.resourceName.trim().slice(0, 60)
         : undefined;
+      const text = (value: unknown, max: number) =>
+        typeof value === "string" && value.trim() ? value.trim().replace(/\s*\n\s*/g, " ").slice(0, max) : undefined;
+      const focus = text(record.focus, 200);
+      const route = text(record.route, 400);
+      const checkpoint = text(record.checkpoint, 200);
       return {
         date: new Date(time).toISOString(),
         title: title.slice(0, 80),
         durationMinutes,
         ...(resourceName ? { resourceName } : {}),
+        ...(focus ? { focus } : {}),
+        ...(route ? { route } : {}),
+        ...(checkpoint ? { checkpoint } : {}),
       } satisfies PlanSession;
     })
     .filter((session): session is PlanSession => session !== null)
