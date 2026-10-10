@@ -57,7 +57,9 @@ import { BatchImportQueue } from "./components/import-queue";
 import { StudyIntro } from "./components/study-intro";
 import { LoginScreen } from "./components/login-screen";
 import { AccountPanel } from "./components/account-panel";
-import { applyPresets, isPresetResourceId } from "./lib/presets";
+import { applyPresets, isPresetCourseId, isPresetResourceId } from "./lib/presets";
+import { formatPlanDate, planSummary, sanitizePlanSessions } from "./lib/review-plan";
+import type { PlanSession } from "./lib/review-plan";
 
 import type { PublicAccount } from "./lib/accounts";
 
@@ -109,15 +111,20 @@ type TaskConfirmDraft = {
   reminder: string;
 };
 
-type PlanSession = {
-  date: string;
-  title: string;
-  durationMinutes: number;
-};
-
 type PlanConfirmState = {
   courseName: string;
   sessions: PlanSession[];
+};
+
+/** 复习计划页的状态：空闲 / 正在规划 / 这次没排出草案 */
+type ReviewPlanStatus = {
+  state: "idle" | "running" | "empty";
+  courseId?: string;
+  courseName?: string;
+  /** 没排成的原因：浅浅手上还有事 / 在等另一张确认卡 */
+  busy?: "running" | "confirm";
+  /** 没排成时浅浅说了什么（直接显示出来，省得用户再去对话里找） */
+  reply?: string;
 };
 
 const initialMessages: ChatMessage[] = [
@@ -192,6 +199,8 @@ export default function Home() {
   // 侧栏课程拖拽排序
   const [draggingCourseId, setDraggingCourseId] = useState<string | null>(null);
   const [dragOverCourseId, setDragOverCourseId] = useState<string | null>(null);
+  // 正在确认删除的课程
+  const [pendingCourseDelete, setPendingCourseDelete] = useState<string | null>(null);
   const [showTaskForm, setShowTaskForm] = useState(false);
   const [resourceTitle, setResourceTitle] = useState("");
   const [resourceCourse, setResourceCourse] = useState("");
@@ -214,8 +223,16 @@ export default function Home() {
   const [syncMessage, setSyncMessage] = useState("");
   const [profile, setProfile] = useState<UserProfile>({ name: "", studyTime: "", goal: "", notes: [] });
   const [pendingTaskConfirm, setPendingTaskConfirm] = useState<AgentToolCall | null>(null);
+  const pendingTaskConfirmRef = useRef<AgentToolCall | null>(null);
   const [taskConfirmDraft, setTaskConfirmDraft] = useState<TaskConfirmDraft | null>(null);
   const [pendingPlanConfirm, setPendingPlanConfirm] = useState<PlanConfirmState | null>(null);
+  // 复习计划页：正在排 / 没排出来 的反馈，避免"点了没反应"
+  const [reviewPlanStatus, setReviewPlanStatus] = useState<ReviewPlanStatus>({ state: "idle" });
+  // 这次复习计划是为哪门课排的：模型没给准课程名时用它兜底
+  const reviewTargetCourseRef = useRef("");
+  const reviewRunIdRef = useRef(0);
+  const reviewPlanArrivedRunRef = useRef(0);
+  const pendingPlanConfirmRef = useRef<PlanConfirmState | null>(null);
   const [confirmError, setConfirmError] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
 
@@ -415,6 +432,8 @@ export default function Home() {
       chatTimestampsRef.current = new Map();
     }
     setImportQueue([]);
+    setReviewPlanStatus({ state: "idle" });
+    reviewTargetCourseRef.current = "";
     setPendingTaskConfirm(null);
     setTaskConfirmDraft(null);
     setPendingPlanConfirm(null);
@@ -559,6 +578,14 @@ export default function Home() {
   }, [snapshot]);
 
   useEffect(() => {
+    pendingPlanConfirmRef.current = pendingPlanConfirm;
+  }, [pendingPlanConfirm]);
+
+  useEffect(() => {
+    pendingTaskConfirmRef.current = pendingTaskConfirm;
+  }, [pendingTaskConfirm]);
+
+  useEffect(() => {
     conversationsRef.current = conversations;
   }, [conversations]);
 
@@ -694,6 +721,22 @@ export default function Home() {
       courses.find((course) => {
         const name = course.name.replace(/\s+/g, "").toLowerCase();
         return normalized.includes(name) || name.includes(normalized);
+      })?.id ??
+      ""
+    );
+  };
+
+  // 模型用资料标题提到某份资料时，找到对应的资料 id（找不到就返回空）
+  const resolveResourceId = (name: string) => {
+    const normalized = name.replace(/\s+/g, "").toLowerCase();
+    if (!normalized) return "";
+    const resources = snapshotRef.current.resources;
+    return (
+      resources.find((item) => item.title.replace(/\s+/g, "").toLowerCase() === normalized)?.id ??
+      resources.find((item) => (item.fileName ?? "").replace(/\s+/g, "").toLowerCase() === normalized)?.id ??
+      resources.find((item) => {
+        const title = item.title.replace(/\s+/g, "").toLowerCase();
+        return normalized.includes(title) || title.includes(normalized);
       })?.id ??
       ""
     );
@@ -931,20 +974,32 @@ export default function Home() {
       }
       case "save_review_plan": {
         const sessions = sanitizePlanSessions(args.sessions);
-        if (!sessions.length) return { ok: false, summary: "复习计划为空，未写入。" };
-        const courseId = resolveCourseId(asString(args.courseName));
-        const tasks: Task[] = sessions.map((session) => ({
-          id: makeId("task"),
-          title: session.title,
-          courseId,
-          type: "复习",
-          dueAt: toLocalInputValue(session.date),
-          status: "未开始",
-          priority: "中",
-          reminder: "提前2小时",
-        }));
+        if (!sessions.length) {
+          reviewPlanArrivedRunRef.current = reviewRunIdRef.current;
+          return {
+            ok: false,
+            summary: "这份计划的日期没解析出来，未写入。请把 sessions[].date 换成 2026-10-10T19:00:00+08:00 这样的 ISO 时间再调用一次。",
+          };
+        }
+        // 课程名对不上时，用复习计划页选中的课程兜底，别一股脑丢进"未分类"
+        const courseId = resolveCourseId(asString(args.courseName)) || reviewTargetCourseRef.current;
+        const courseLabel = courseNameOf(courseId) || asString(args.courseName) || "未分类";
+        const tasks: Task[] = sessions.map((session) => {
+          const resourceId = session.resourceName ? resolveResourceId(session.resourceName) : "";
+          return {
+            id: makeId("task"),
+            title: session.title,
+            courseId,
+            type: "复习",
+            dueAt: toLocalInputValue(session.date),
+            status: "未开始",
+            priority: "中",
+            reminder: "提前2小时",
+            ...(resourceId ? { resourceId } : {}),
+          };
+        });
         setSnapshot((current) => ({ ...current, tasks: [...tasks, ...current.tasks] }));
-        return { ok: true, summary: `已保存 ${tasks.length} 个复习安排到任务中心`, data: { count: tasks.length } };
+        return { ok: true, summary: `已把 ${tasks.length} 个复习安排写入「${courseLabel}」`, data: { count: tasks.length } };
       }
       default:
         return { ok: false, summary: `未知工具：${call.name}` };
@@ -1023,10 +1078,15 @@ export default function Home() {
         return;
       }
       if (call.name === "save_review_plan") {
+        reviewPlanArrivedRunRef.current = reviewRunIdRef.current;
+        const plannedCourseId = resolveCourseId(asString(call.arguments.courseName)) || reviewTargetCourseRef.current;
         setPendingPlanConfirm({
-          courseName: asString(call.arguments.courseName),
+          courseName:
+            snapshotRef.current.courses.find((item) => item.id === plannedCourseId)?.name ||
+            asString(call.arguments.courseName),
           sessions: sanitizePlanSessions(call.arguments.sessions),
         });
+        setReviewPlanStatus((current) => (current.state === "running" ? { state: "idle" } : current));
         setConfirmError("");
         openConfirmation(resolve);
         return;
@@ -1286,17 +1346,69 @@ export default function Home() {
     await runAgent(text, images);
   };
 
-  const generateReviewPlan = (courseId: string, examAt: string, availability: string) => {
-    if (agentRunningRef.current) return;
+  /** 等浅浅把手上的循环跑完（撤掉确认卡后通常几百毫秒） */
+  const waitForAgentIdle = async (timeoutMs = 20000) => {
+    const started = Date.now();
+    while (agentRunningRef.current && Date.now() - started < timeoutMs) {
+      await new Promise((resolve) => window.setTimeout(resolve, 150));
+    }
+    return !agentRunningRef.current;
+  };
+
+  const generateReviewPlan = async (courseId: string, examAt: string, availability: string) => {
+    // 每一轮生成拿一个编号：换课程重新生成时，上一轮的收尾不能把新轮的状态覆盖掉
+    const runId = reviewRunIdRef.current + 1;
+    reviewRunIdRef.current = runId;
     const course = snapshot.courses.find((item) => item.id === courseId);
+    const courseName = course?.name ?? "";
+    const setStatus = (next: ReviewPlanStatus) => {
+      if (reviewRunIdRef.current === runId) setReviewPlanStatus(next);
+    };
+
+    // 旧草案还挂着的时候，浅浅其实卡在"等你确认"那一步：
+    // 以前这里直接静默 return，用户换课程再点就完全没反应。现在先撤掉旧草案，把它放出来。
+    const hasStaleDraft = Boolean(pendingPlanConfirmRef.current);
+    setPendingPlanConfirm(null);
+    setConfirmError("");
+    setStatus({ state: "running", courseId, courseName });
+    if (hasStaleDraft) {
+      settleConfirmation({ approved: false });
+      await waitForAgentIdle();
+    }
+    if (agentRunningRef.current) {
+      setStatus({
+        state: "empty",
+        courseId,
+        courseName,
+        busy: pendingTaskConfirmRef.current ? "confirm" : "running",
+      });
+      return;
+    }
+
     const exam = new Date(examAt);
     const goal = [
-      `请为「${course?.name ?? "未分类课程"}」制定复习计划。`,
+      `请为「${courseName || "未分类课程"}」制定复习计划。`,
       `考试或目标时间：${Number.isNaN(exam.getTime()) ? examAt : exam.toISOString()}。`,
       `我方便学习的时间：${availability || "未说明"}。`,
-      "请先调用工具查询该课程的未完成任务与已有资料，再把计划拆成具体到天、每次 30-90 分钟的可执行安排，所有安排必须早于考试时间，最后调用 save_review_plan 保存。",
+      "请先调用工具查询该课程的未完成任务与已有资料，再把计划拆成具体到天、每次 30-90 分钟的可执行安排；" +
+        "每次安排都写清这次要用哪份资料（sessions[].resourceName 填资料标题），所有安排必须早于考试时间。" +
+        "最后必须调用 save_review_plan 把计划结构化提交（不要只在回复里用文字列计划，也不要再反问用户；信息不足就按合理默认值排，并在标题里写明假设）。" +
+        "如果这门课任务和资料都很少，也按主题/章节排一份通用复习节奏。",
     ].join("");
-    void runAgent(goal);
+
+    reviewTargetCourseRef.current = courseId;
+    reviewPlanArrivedRunRef.current = 0;
+    await runAgent(goal);
+    if (reviewRunIdRef.current !== runId) return; // 这一轮已经被新的一轮接管了
+    reviewTargetCourseRef.current = "";
+    const arrived = reviewPlanArrivedRunRef.current === runId;
+    const lastReply = [...agentHistoryRef.current].reverse().find((item) => item.role === "assistant")?.content ?? "";
+    setReviewPlanStatus((current) => {
+      if (current.state !== "running") return current;
+      return arrived
+        ? { state: "idle" }
+        : { state: "empty", courseId, courseName, reply: lastReply.slice(0, 280) };
+    });
   };
 
   // 主动性：每天首次打开时巡检本地数据，让智能体先开口。
@@ -1753,6 +1865,30 @@ export default function Home() {
     setDragOverCourseId(null);
   };
 
+  // 删除课程：课程下的资料与任务不删除，只变成"未分类"
+  const deleteCourse = (course: Course) => {
+    const affectedResources = snapshotRef.current.resources.filter((item) => item.courseId === course.id).length;
+    const affectedTasks = snapshotRef.current.tasks.filter((item) => item.courseId === course.id).length;
+    setSnapshot((current) => ({
+      ...current,
+      courses: current.courses.filter((item) => item.id !== course.id),
+      resources: current.resources.map((item) => (item.courseId === course.id ? { ...item, courseId: "" } : item)),
+      tasks: current.tasks.map((item) => (item.courseId === course.id ? { ...item, courseId: "" } : item)),
+    }));
+    // 预设课程删掉后不要再被补回来
+    if (isPresetCourseId(course.id)) hidePreset(course.id);
+    void deleteCloud("courses", [course.id]);
+    const moved = [
+      affectedResources ? affectedResources + " 份资料" : "",
+      affectedTasks ? affectedTasks + " 条任务" : "",
+    ].filter(Boolean).join("和");
+    addAssistantMessage(
+      moved
+        ? "已删除课程「" + course.name + "」，" + moved + "变成了「未分类」。"
+        : "已删除课程「" + course.name + "」。",
+    );
+  };
+
   // 修改某份资料所属课程（导入时挂错课程可就地纠正）
   const reassignResource = (resourceId: string, courseId: string) => {
     setSnapshot((current) => ({
@@ -2073,38 +2209,73 @@ export default function Home() {
           {orderedCourses.map((course) => {
             const dragging = draggingCourseId === course.id;
             const dragOver = dragOverCourseId === course.id && !dragging;
+            const confirming = pendingCourseDelete === course.id;
+            const openCourse = () => { setSearch(course.name); setView("resources"); };
             return (
-              <button
-                className={`course-row course-draggable ${view === "resources" && search.trim() === course.name ? "active" : ""} ${dragging ? "dragging" : ""} ${dragOver ? "drag-over" : ""}`}
-                key={course.id}
-                draggable
-                title="按住拖动可调整课程顺序"
-                onDragStart={(event) => {
-                  setDraggingCourseId(course.id);
-                  event.dataTransfer.effectAllowed = "move";
-                  try { event.dataTransfer.setData("text/plain", course.id); } catch { /* 部分浏览器不允许写入 */ }
-                }}
-                onDragOver={(event) => {
-                  if (!draggingCourseId || draggingCourseId === course.id) return;
-                  event.preventDefault();
-                  event.dataTransfer.dropEffect = "move";
-                  setDragOverCourseId(course.id);
-                }}
-                onDragLeave={() => setDragOverCourseId((current) => (current === course.id ? null : current))}
-                onDrop={(event) => {
-                  event.preventDefault();
-                  const sourceId = draggingCourseId ?? event.dataTransfer.getData("text/plain");
-                  if (sourceId) dropCourse(sourceId, course.id);
-                  clearCourseDrag();
-                }}
-                onDragEnd={clearCourseDrag}
-                onClick={() => { setSearch(course.name); setView("resources"); }}
-              >
-                <span className={`course-swatch ${course.color}`} />
-                <span className="course-name">{course.name}</span>
-                <span className="course-count">{snapshot.resources.filter((resource) => resource.courseId === course.id).length}</span>
-                <span className="course-handle" aria-hidden="true">⠿</span>
-              </button>
+              <div key={course.id}>
+                <div
+                  className={`course-row course-draggable ${view === "resources" && search.trim() === course.name ? "active" : ""} ${dragging ? "dragging" : ""} ${dragOver ? "drag-over" : ""}`}
+                  role="button"
+                  tabIndex={0}
+                  draggable
+                  title="按住拖动可以调整课程顺序"
+                  onDragStart={(event) => {
+                    setDraggingCourseId(course.id);
+                    event.dataTransfer.effectAllowed = "move";
+                    try { event.dataTransfer.setData("text/plain", course.id); } catch { /* 部分浏览器不允许写入 */ }
+                  }}
+                  onDragOver={(event) => {
+                    if (!draggingCourseId || draggingCourseId === course.id) return;
+                    event.preventDefault();
+                    event.dataTransfer.dropEffect = "move";
+                    setDragOverCourseId(course.id);
+                  }}
+                  onDragLeave={() => setDragOverCourseId((current) => (current === course.id ? null : current))}
+                  onDrop={(event) => {
+                    event.preventDefault();
+                    const sourceId = draggingCourseId ?? event.dataTransfer.getData("text/plain");
+                    if (sourceId) dropCourse(sourceId, course.id);
+                    clearCourseDrag();
+                  }}
+                  onDragEnd={clearCourseDrag}
+                  onClick={openCourse}
+                  onKeyDown={(event) => {
+                    if (event.key !== "Enter" && event.key !== " ") return;
+                    event.preventDefault();
+                    openCourse();
+                  }}
+                >
+                  <span className={`course-swatch ${course.color}`} />
+                  <span className="course-name">{course.name}</span>
+                  <span className="course-count">{snapshot.resources.filter((resource) => resource.courseId === course.id).length}</span>
+                  <span className="course-handle" aria-hidden="true">⠿</span>
+                  <button
+                    type="button"
+                    className="course-delete"
+                    title={`删除课程「${course.name}」`}
+                    aria-label={`删除课程 ${course.name}`}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setPendingCourseDelete(course.id);
+                    }}
+                  >
+                    ✕
+                  </button>
+                </div>
+                {confirming ? (
+                  <div className="course-confirm" onClick={(event) => event.stopPropagation()}>
+                    <span>删除「{course.name}」？资料与任务会变成未分类</span>
+                    <button
+                      type="button"
+                      className="quiet-button danger"
+                      onClick={() => { deleteCourse(course); setPendingCourseDelete(null); }}
+                    >
+                      确认删除
+                    </button>
+                    <button type="button" className="text-button" onClick={() => setPendingCourseDelete(null)}>取消</button>
+                  </div>
+                ) : null}
+              </div>
             );
           })}
         </div>
@@ -2263,10 +2434,12 @@ export default function Home() {
               courses={snapshot.courses}
               running={agentRunning}
               plan={pendingPlanConfirm}
+              status={reviewPlanStatus}
               confirmError={confirmError}
               onGenerate={generateReviewPlan}
               onApprovePlan={approvePlanConfirm}
               onRejectPlan={rejectConfirm}
+              onOpenAssistant={() => setView("assistant")}
             />
           ) : null}
 
@@ -2657,11 +2830,15 @@ function PlanConfirmCard({ plan, error, onApprove, onReject }: { plan: PlanConfi
   return (
     <div className="action-card gsap-action-card">
       <div className="action-label">浅浅请求写入 · 复习计划（{plan.courseName || "未指定课程"}）</div>
+      <div className="plan-summary">{planSummary(plan.sessions)}</div>
       <div className="plan-session-list">
         {plan.sessions.map((session) => (
           <div className="plan-item" key={`${session.date}-${session.title}`}>
-            <time>{formatDate(session.date)}</time>
-            <div><strong>{session.title}</strong><span>将创建为复习任务</span></div>
+            <time>{formatPlanDate(session.date)}</time>
+            <div>
+              <strong>{session.title}</strong>
+              <span>{session.resourceName ? `用这份资料：${session.resourceName}` : "将创建为复习任务"}</span>
+            </div>
             <b>{session.durationMinutes}分钟</b>
           </div>
         ))}
@@ -3423,19 +3600,151 @@ function TasksView({
   );
 }
 
-function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprovePlan, onRejectPlan }: { courses: Course[]; running: boolean; plan: PlanConfirmState | null; confirmError: string; onGenerate: (courseId: string, examAt: string, availability: string) => void; onApprovePlan: () => void; onRejectPlan: () => void; }) {
+function ReviewView({
+  courses, running, plan, status, confirmError, onGenerate, onApprovePlan, onRejectPlan, onOpenAssistant,
+}: {
+  courses: Course[];
+  running: boolean;
+  plan: PlanConfirmState | null;
+  status: ReviewPlanStatus;
+  confirmError: string;
+  onGenerate: (courseId: string, examAt: string, availability: string) => void;
+  onApprovePlan: () => void;
+  onRejectPlan: () => void;
+  onOpenAssistant: () => void;
+}) {
   const [courseId, setCourseId] = useState(courses[0]?.id ?? "");
   const [examAt, setExamAt] = useState(() => toLocalInputValue(new Date(Date.now() + 7 * 86_400_000).toISOString()));
   const [availability, setAvailability] = useState("工作日晚上 19:00–21:00");
   const [justSaved, setJustSaved] = useState(false);
-  const course = courses.find((item) => item.id === courseId);
+  // 课程列表变了（新建 / 重置数据）时，别让选中项停在一门已经不存在的课上
+  const selectedCourseId = courses.some((item) => item.id === courseId) ? courseId : (courses[0]?.id ?? "");
+  const course = courses.find((item) => item.id === selectedCourseId);
 
-  return <div className="page-view"><PageHeader eyebrow="REVIEW STUDIO" title="复习计划" description="浅浅会先查询你的真实任务和资料，再把计划排成可以完成的节奏。" action={<span className="soft-badge">Agent 生成 · 需确认</span>} />
-    <div className="review-layout"><div className="review-form-card"><div className="card-kicker">STEP 01 · 先说你的时间</div><h2>为哪门课准备？</h2><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}</select><label>考试或复习截止时间<input type="datetime-local" value={examAt} onChange={(event) => setExamAt(event.target.value)} /></label><label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label><div className="availability-chips"><button onClick={() => setAvailability("工作日晚上 19:00–21:00")}>工作日晚上</button><button onClick={() => setAvailability("周末上午 09:00–12:00")}>周末上午</button><button onClick={() => setAvailability("每天 60 分钟")}>每天1小时</button></div><button className="primary-button wide" disabled={running || !courseId} onClick={() => { setJustSaved(false); onGenerate(courseId, examAt, availability); }}>{running ? "智能体规划中…" : "生成计划草案"}</button><small className="form-help">智能体会先查询「{course?.name ?? "课程"}」的未完成任务和已有资料，再制定计划。</small></div><div className="plan-preview-card">{plan ? <><div className="plan-head"><div><div className="card-kicker">STEP 02 · 草案待确认</div><h2>{plan.courseName || course?.name || "课程"} · 复习节奏</h2></div><span className="soft-badge">{availability}</span></div>{plan.sessions.map((session) => <PlanItem key={`${session.date}-${session.title}`} date={formatShortDate(session.date)} title={session.title} duration={`${session.durationMinutes}分钟`} />)}{confirmError ? <div className="queue-error">{confirmError}</div> : null}<div className="plan-actions"><button className="primary-button" onClick={() => { onApprovePlan(); setJustSaved(true); }}>确认保存</button><button className="quiet-button" onClick={onRejectPlan}>放弃草案</button></div></> : justSaved ? <div className="empty-plan"><div className="plan-orbit">✓</div><h2>计划已保存</h2><p>复习安排已写入任务中心，到点会在任务列表中出现。</p></div> : running ? <div className="empty-plan"><span className="progress-spinner" /><h2>智能体正在规划</h2><p>正在查询任务与资料，并把复习安排拆到具体日期。</p></div> : <div className="empty-plan"><div className="plan-orbit">✦</div><h2>计划会出现在这里</h2><p>选择课程并告诉我你有空的时间，智能体会基于真实数据生成一份可确认的草案。</p></div>}</div></div>
-  </div>;
+  const planning = status.state === "running" || (running && !plan && status.state !== "empty");
+  const planningCourse = status.courseName || course?.name || "这门课";
+
+  return (
+    <div className="page-view">
+      <PageHeader
+        eyebrow="REVIEW STUDIO"
+        title="复习计划"
+        description="浅浅会先查询你的真实任务和资料，再把计划排成可以完成的节奏。"
+        action={<span className="soft-badge">Agent 生成 · 需确认</span>}
+      />
+      <div className="review-layout">
+        <div className="review-form-card">
+          <div className="card-kicker">STEP 01 · 先说你的时间</div>
+          <h2>为哪门课准备？</h2>
+          <select value={selectedCourseId} onChange={(event) => setCourseId(event.target.value)} aria-label="复习计划课程">
+            {courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
+          </select>
+          <label>考试或复习截止时间<input type="datetime-local" value={examAt} onChange={(event) => setExamAt(event.target.value)} /></label>
+          <label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label>
+          <div className="availability-chips">
+            <button onClick={() => setAvailability("工作日晚上 19:00–21:00")}>工作日晚上</button>
+            <button onClick={() => setAvailability("周末上午 09:00–12:00")}>周末上午</button>
+            <button onClick={() => setAvailability("每天 60 分钟")}>每天1小时</button>
+          </div>
+          <button
+            className="primary-button wide"
+            disabled={planning || !selectedCourseId}
+            onClick={() => { setJustSaved(false); onGenerate(selectedCourseId, examAt, availability); }}
+          >
+            {planning ? "浅浅规划中…" : plan ? "重新生成计划" : "生成计划草案"}
+          </button>
+          <small className="form-help">
+            浅浅会先查「{course?.name ?? "课程"}」的未完成任务和已有资料，再排出具体到天的安排；
+            <strong>确认保存后</strong>才会写进任务中心。
+          </small>
+        </div>
+
+        <div className="plan-preview-card">
+          {plan ? (
+            <>
+              <div className="plan-head">
+                <div>
+                  <div className="card-kicker">STEP 02 · 草案待确认</div>
+                  <h2>{plan.courseName || course?.name || "课程"} · 复习节奏</h2>
+                </div>
+                <span className="soft-badge">{availability}</span>
+              </div>
+              <div className="plan-summary">{planSummary(plan.sessions)}</div>
+              <div className="plan-session-list">
+                {plan.sessions.map((session, index) => (
+                  <PlanItem
+                    key={`${session.date}-${index}`}
+                    date={formatPlanDate(session.date)}
+                    title={session.title}
+                    duration={`${session.durationMinutes}分钟`}
+                    note={session.resourceName ? `用这份资料：${session.resourceName}` : "将创建为复习任务"}
+                  />
+                ))}
+              </div>
+              {confirmError ? <div className="queue-error">{confirmError}</div> : null}
+              <div className="plan-actions">
+                <button className="primary-button" onClick={() => { onApprovePlan(); setJustSaved(true); }}>确认保存</button>
+                <button className="quiet-button" onClick={onRejectPlan}>放弃草案</button>
+                <button className="text-button" onClick={() => { setJustSaved(false); onGenerate(selectedCourseId, examAt, availability); }}>换一套重排</button>
+              </div>
+            </>
+          ) : justSaved ? (
+            <div className="empty-plan">
+              <div className="plan-orbit">✓</div>
+              <h2>计划已保存</h2>
+              <p>复习安排已写入任务中心，到点会在任务列表中出现。</p>
+              <div className="plan-actions">
+                <button className="quiet-button" onClick={() => setJustSaved(false)}>再排一份</button>
+              </div>
+            </div>
+          ) : planning ? (
+            <div className="empty-plan">
+              <span className="progress-spinner" />
+              <h2>正在为「{planningCourse}」排计划</h2>
+              <p>浅浅正在查这门课的任务和资料，一般 20–60 秒。你可以先去别处，排好会回到这里等你确认。</p>
+            </div>
+          ) : status.state === "empty" ? (
+            <div className="empty-plan">
+              <div className="plan-orbit">!</div>
+              <h2>这次没有排出计划草案</h2>
+              <p>
+                {status.busy === "confirm"
+                  ? "浅浅正在等你确认另一张卡片（任务写入），先处理完那张再回来排计划。"
+                  : status.busy === "running"
+                    ? "浅浅正在处理上一件事，等它结束再点一次就好。"
+                    : "浅浅这次没有整理出计划草案，它说的是："}
+              </p>
+              {!status.busy && status.reply ? <p className="plan-reply">{status.reply}</p> : null}
+              <div className="plan-actions">
+                <button className="primary-button" onClick={() => { setJustSaved(false); onGenerate(selectedCourseId, examAt, availability); }}>重新生成</button>
+                <button className="quiet-button" onClick={onOpenAssistant}>去浅浅看看</button>
+              </div>
+            </div>
+          ) : (
+            <div className="empty-plan">
+              <div className="plan-orbit">✦</div>
+              <h2>计划会出现在这里</h2>
+              <p>选择课程并告诉我你有空的时间，浅浅会基于真实数据生成一份可确认的草案。</p>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
 }
 
-function PlanItem({ date, title, duration }: { date: string; title: string; duration: string }) { return <div className="plan-item"><time>{date}</time><div><strong>{title}</strong><span>关联资料 · 可调整</span></div><b>{duration}</b></div>; }
+function PlanItem({ date, title, duration, note }: { date: string; title: string; duration: string; note?: string }) {
+  return (
+    <div className="plan-item">
+      <time>{date}</time>
+      <div>
+        <strong>{title}</strong>
+        {note ? <span>{note}</span> : null}
+      </div>
+      <b>{duration}</b>
+    </div>
+  );
+}
 
 function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, onSyncNow, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; syncState: "idle" | "syncing" | "error" | "offline"; syncMessage: string; lastSyncedAt: string | null; conversationCount: number; onSyncNow: () => void; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
   const [draft, setDraft] = useState<UserProfile>(profile);
@@ -3570,21 +3879,13 @@ function toLocalInputValue(value: string) {
   return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}T${pad(date.getHours())}:${pad(date.getMinutes())}`;
 }
 
-function sanitizePlanSessions(value: unknown): PlanSession[] {
-  if (!Array.isArray(value)) return [];
-  return value
-    .map((item) => {
-      if (typeof item !== "object" || item === null) return null;
-      const record = item as Record<string, unknown>;
-      const title = typeof record.title === "string" ? record.title.trim() : "";
-      const date = typeof record.date === "string" ? record.date : "";
-      const durationMinutes = typeof record.durationMinutes === "number" && record.durationMinutes > 0 ? Math.round(record.durationMinutes) : 45;
-      if (!title || !date || Number.isNaN(new Date(date).getTime())) return null;
-      return { date, title, durationMinutes };
-    })
-    .filter((session): session is PlanSession => session !== null)
-    .slice(0, 14);
-}
+
+
+
+
+
+
+
 
 function weekNumber(date: Date) {
   const start = new Date(date.getFullYear(), 0, 1);

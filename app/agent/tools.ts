@@ -111,7 +111,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
     name: "save_review_plan",
     label: "保存复习计划",
     description:
-      "保存一份复习计划：每个 session 会被创建为一条「复习」任务。调用前先用 list_tasks 和 search_resources 了解真实进度；调用后系统会向用户展示计划草案，确认后才写入。",
+      "保存一份复习计划：每个 session 会被创建为一条「复习」任务。调用前先用 list_tasks 和 search_resources 了解真实进度；同一门课的安排按日期从早到晚排好、不要重复同一天；能指出每次用哪份资料就填 resourceName。调用后系统会向用户展示计划草案，确认后才写入。",
     parameters: {
       type: "object",
       properties: {
@@ -124,6 +124,10 @@ export const AGENT_TOOLS: ToolSpec[] = [
               date: { type: "string", description: "ISO 8601 日期时间" },
               title: { type: "string", description: "这次复习要做什么，具体可执行" },
               durationMinutes: { type: "number" },
+              resourceName: {
+                type: "string",
+                description: "这次复习要用到的资料标题（从 search_resources 的结果里取，没有就省略）",
+              },
             },
             required: ["date", "title", "durationMinutes"],
             additionalProperties: false,

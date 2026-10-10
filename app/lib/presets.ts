@@ -64,6 +64,11 @@ export function isPresetResourceId(id: string) {
   return id.startsWith(PRESET_RESOURCE_PREFIX);
 }
 
+/** 是不是预设课程（用户删掉它之后不再自动补回来） */
+export function isPresetCourseId(id: string) {
+  return id === PRESET_COURSE_ID;
+}
+
 const normalizeName = (value: string) => value.replace(/\s+/g, "").toLowerCase();
 
 /**
@@ -80,7 +85,7 @@ export function applyPresets(snapshot: AppSnapshot, hidden: string[] = []): AppS
 
   let courses = snapshot.courses;
   let changed = false;
-  if (!existingCourse) {
+  if (!existingCourse && !hiddenSet.has(PRESET_COURSE_ID)) {
     const maxOrder = courses.reduce((max, course) => Math.max(max, course.order ?? -1), -1);
     courses = [...courses, { ...PRESET_COURSE, order: maxOrder + 1 }];
     changed = true;

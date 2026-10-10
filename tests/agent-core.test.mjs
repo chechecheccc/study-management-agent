@@ -538,6 +538,56 @@ test("任务分组：未逾期在前（今天/明天/本周/更晚），已逾�
   assert.equal(isOverdueGroup("今天"), false);
 });
 
+import {
+  parsePlanTimestamp,
+  sanitizePlanSessions,
+  planSummary,
+  formatPlanDate,
+} from "../app/lib/review-plan.ts";
+
+test("复习计划：模型写的中文/简写日期都能解析", () => {
+  const now = new Date("2026-10-10T09:00:00+08:00");
+  // 标准 ISO 直接用
+  assert.equal(parsePlanTimestamp("2026-10-12T19:00:00+08:00"), new Date("2026-10-12T19:00:00+08:00").getTime());
+  // 10/10 这种以前是 NaN，导致整份计划被判成空
+  const shortDate = new Date(parsePlanTimestamp("10/12", now));
+  assert.equal(shortDate.getFullYear(), 2026);
+  assert.equal(shortDate.getMonth(), 9);
+  assert.equal(shortDate.getDate(), 12);
+  assert.equal(shortDate.getHours(), 19); // 只给日期时按晚上 19:00 算，避免当天就显示逾期
+  // 「10/10 今晚」这种带口语的说法
+  const tonight = new Date(parsePlanTimestamp("10/10 今晚", now));
+  assert.equal(tonight.getDate(), 10);
+  assert.equal(tonight.getHours(), 19);
+  // 相对日期
+  const tomorrow = new Date(parsePlanTimestamp("明天", now));
+  assert.equal(tomorrow.getDate(), 11);
+  // 带具体时间的写法
+  const withTime = new Date(parsePlanTimestamp("2026年10月15日下午 20:30", now));
+  assert.equal(withTime.getDate(), 15);
+  assert.equal(withTime.getHours(), 20);
+  // 完全看不懂的返回 NaN，交给上层丢弃
+  assert.ok(Number.isNaN(parsePlanTimestamp("下周找个时间", now)));
+});
+
+test("复习计划：草案会排序去重、兜住时长", () => {
+  const sessions = sanitizePlanSessions([
+    { date: "10/14", title: "第三章", durationMinutes: 60 },
+    { date: "10/12", title: "第一章", durationMinutes: 60 },
+    { date: "10/12", title: "第一章", durationMinutes: 60 }, // 重复
+    { date: "10/13", title: "第二章", durationMinutes: 9999 }, // 时长越界
+    { date: "看不懂", title: "无效", durationMinutes: 30 }, // 日期无效
+    { title: "没有日期", durationMinutes: 30 },
+  ]);
+  assert.equal(sessions.length, 3);
+  assert.deepEqual(sessions.map((item) => item.title), ["第一章", "第二章", "第三章"]);
+  assert.equal(sessions[1].durationMinutes, 240);
+  assert.match(planSummary(sessions), /共 3 次/);
+  assert.match(formatPlanDate(sessions[0].date), /10\/12/);
+  // 非数组直接当空计划
+  assert.deepEqual(sanitizePlanSessions("不是数组"), []);
+});
+
 test("今天判定与提醒规则组合", () => {
   const now = new Date("2026-10-08T12:00:00+08:00");
   assert.equal(isDueToday(makeTask({ dueAt: "2026-10-08T23:59" }), now), true);

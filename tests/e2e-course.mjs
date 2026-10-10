@@ -148,6 +148,17 @@ try {
   await dragCourse(movedName, targetName);
   await page.waitForTimeout(6000);
 
+  // 8) 删除课程：资料与任务不删除，只会变成「未分类」
+  await page.locator(".course-row", { hasText: "计算机科学中的建模技术" }).hover();
+  await page.locator('button[aria-label="删除课程 计算机科学中的建模技术"]').click();
+  await page.waitForTimeout(700);
+  check("删除课程有二次确认", await page.locator(".course-confirm").isVisible().catch(() => false));
+  await page.locator(".course-confirm").getByRole("button", { name: "确认删除" }).click();
+  await page.waitForTimeout(2500);
+  const afterDelete = await courseNames(page);
+  check("课程已从侧栏删除", !afterDelete.includes("计算机科学中的建模技术"), afterDelete.join(" > "));
+  check("侧栏不再有该课程的资料计数", !afterDelete.join(" ").includes("计算机科学中的建模技术"));
+
   await page.screenshot({ path: new URL("../.e2e/course-new.png", import.meta.url).pathname.slice(1) });
 } catch (error) {
   check("新建课程测试执行", false, error instanceof Error ? error.message : String(error));
