@@ -91,6 +91,11 @@ export async function POST(request: Request) {
         status: String(item.status ?? "未开始"),
         priority: String(item.priority ?? "中"),
         reminder: String(item.reminder ?? ""),
+        resourceId: item.resourceId ? String(item.resourceId) : null,
+        // 任务附图：只收 data URL 字符串，最多 6 张，避免单条记录过大
+        images: Array.isArray(item.images)
+          ? (item.images as unknown[]).filter((value): value is string => typeof value === "string").slice(0, 6)
+          : [],
         updatedAt: String(item.updatedAt ?? now),
         deletedAt: (item.deletedAt as string | null) ?? null,
       };

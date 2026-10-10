@@ -31,7 +31,17 @@ import {
 import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
 import { deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, serverFileUrl, touchSnapshot, uploadFileToServer } from "./lib/cloud-sync";
-import { buildReminderText, deriveTaskStatus, groupTasks, isDueToday, parseReminderText, REMINDER_CHOICES } from "./lib/task-utils";
+import {
+  buildReminderText,
+  deriveTaskStatus,
+  formatReminderMinutes,
+  groupTasks,
+  isDueToday,
+  isOverdueGroup,
+  isPresetReminder,
+  parseReminderText,
+  REMINDER_CHOICES,
+} from "./lib/task-utils";
 import type { ExtractRequest, ExtractResult } from "./lib/ai-contract";
 import { buildLocalPreview, releaseLocalPreview } from "./lib/file-preview";
 import type { LocalPreview } from "./lib/file-preview";
@@ -188,10 +198,12 @@ export default function Home() {
   const [resourceType, setResourceType] = useState<Resource["type"]>("课件");
   const [taskTitle, setTaskTitle] = useState("");
   const [taskCourse, setTaskCourse] = useState("");
-  const [taskDueAt, setTaskDueAt] = useState("2026-08-12T23:59");
+  const [taskDueAt, setTaskDueAt] = useState(() => defaultTaskDueAt());
   const [taskType, setTaskType] = useState<Task["type"]>("DDL");
   const [taskPriority, setTaskPriority] = useState<Task["priority"]>("中");
-  const [taskReminderMinutes, setTaskReminderMinutes] = useState<number[]>([1440]);
+  const [taskReminder, setTaskReminder] = useState("提前1天");
+  const [taskResourceId, setTaskResourceId] = useState("");
+  const [taskImages, setTaskImages] = useState<string[]>([]);
   const [currentUser, setCurrentUser] = useState<SessionUser | null>(null);
   // 管理员面板用的服务端账号列表
   const [accounts, setAccounts] = useState<PublicAccount[]>([]);
@@ -1595,7 +1607,7 @@ export default function Home() {
         contentText: item.contentText?.slice(0, 20000) || undefined,
       };
       const task = item.includeTask && item.taskDraft
-        ? { ...item.taskDraft, id: makeId("task") }
+        ? { ...item.taskDraft, id: makeId("task"), resourceId: item.taskDraft.resourceId ?? resourceId }
         : null;
       setSnapshot((current) => ({
         ...current,
@@ -1777,13 +1789,19 @@ export default function Home() {
       dueAt: taskDueAt,
       status: "未开始",
       priority: taskPriority,
-      reminder: buildReminderText(taskReminderMinutes),
+      reminder: taskReminder || "提前1天",
+      ...(taskResourceId ? { resourceId: taskResourceId } : {}),
+      ...(taskImages.length ? { images: taskImages } : {}),
     };
     setSnapshot((current) => ({ ...current, tasks: [task, ...current.tasks] }));
+    // 存完把表单清干净，免得下一条任务误带上上一条的课程/资料/图片
     setTaskTitle("");
-    setTaskReminderMinutes([1440]);
+    setTaskReminder("提前1天");
+    setTaskResourceId("");
+    setTaskImages([]);
     setTaskPriority("中");
     setTaskType("DDL");
+    setTaskDueAt(defaultTaskDueAt());
     setShowTaskForm(false);
   };
 
@@ -2205,7 +2223,7 @@ export default function Home() {
 
           {view === "tasks" ? (
             <TasksView
-              tasks={upcomingTasks}
+              tasks={snapshot.tasks}
               courseMap={courseMap}
               courses={snapshot.courses}
               showForm={showTaskForm}
@@ -2220,9 +2238,14 @@ export default function Home() {
               setTaskType={setTaskType}
               priority={taskPriority}
               setPriority={setTaskPriority}
-              reminderMinutes={taskReminderMinutes}
-              setReminderMinutes={setTaskReminderMinutes}
+              reminder={taskReminder}
+              setReminder={setTaskReminder}
+              resourceId={taskResourceId}
+              setResourceId={setTaskResourceId}
+              images={taskImages}
+              setImages={setTaskImages}
               resources={snapshot.resources}
+              onCreateCourse={createCourse}
               onCreate={createTask}
               onComplete={(taskId) => updateTaskStatus(taskId, "已完成")}
               onDelete={deleteTask}
@@ -2835,10 +2858,219 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign 
   );
 }
 
+/** 任务相关的小组件与工具：课程选择（可顺手新建课程）、提醒选择（含自定义）、任务附图 */
+
+const NEW_COURSE_VALUE = "__new_course__";
+const MAX_TASK_IMAGES = 6;
+
+type ReminderUnit = "分钟" | "小时" | "天";
+const REMINDER_UNITS: ReminderUnit[] = ["分钟", "小时", "天"];
+const UNIT_MINUTES: Record<ReminderUnit, number> = { 分钟: 1, 小时: 60, 天: 1440 };
+
+/** 把分钟数拆成"数值 + 单位"，用作自定义提醒的初值 */
+function splitReminderMinutes(minutes: number): { amount: number; unit: ReminderUnit } {
+  if (minutes > 0 && minutes % 1440 === 0) return { amount: minutes / 1440, unit: "天" };
+  if (minutes > 0 && minutes % 60 === 0) return { amount: minutes / 60, unit: "小时" };
+  return { amount: minutes > 0 ? minutes : 2, unit: minutes > 0 ? "分钟" : "小时" };
+}
+
+/** 课程下拉：第一项是"＋ 新建课程"，选它就能就地输入新课程名 */
+function CoursePicker({ value, onChange, courses, onCreateCourse, ariaLabel }: {
+  value: string;
+  onChange: (courseId: string) => void;
+  courses: Course[];
+  onCreateCourse: (name: string) => string | null;
+  ariaLabel?: string;
+}) {
+  const [creating, setCreating] = useState(false);
+  const [name, setName] = useState("");
+
+  const submit = () => {
+    const id = onCreateCourse(name);
+    if (!id) return;
+    setName("");
+    setCreating(false);
+    onChange(id);
+  };
+
+  return (
+    <span className="course-picker">
+      <select
+        value={creating ? NEW_COURSE_VALUE : value}
+        aria-label={ariaLabel}
+        onChange={(event) => {
+          if (event.target.value === NEW_COURSE_VALUE) {
+            setCreating(true);
+            return;
+          }
+          setCreating(false);
+          onChange(event.target.value);
+        }}
+      >
+        <option value={NEW_COURSE_VALUE}>＋ 新建课程</option>
+        {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+      </select>
+      {creating ? (
+        <span className="course-picker-new">
+          <input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            onKeyDown={(event) => {
+              if (event.key !== "Enter") return;
+              event.preventDefault();
+              submit();
+            }}
+            placeholder="新课程名称"
+            aria-label="新课程名称"
+            autoFocus
+          />
+          <button type="button" className="text-button" onClick={submit}>保存</button>
+          <button type="button" className="text-button" onClick={() => { setCreating(false); setName(""); }}>取消</button>
+        </span>
+      ) : null}
+    </span>
+  );
+}
+
+/** 提醒选择：预设档位 + 自定义（数值 + 分钟/小时/天） */
+function ReminderPicker({ value, onChange, className }: {
+  value: string;
+  onChange: (next: string) => void;
+  className?: string;
+}) {
+  const parsed = parseReminderText(value);
+  const presets = parsed.filter(isPresetReminder);
+  const customValue = parsed.find((minutes) => !isPresetReminder(minutes)) ?? 0;
+  const initial = customValue > 0 ? splitReminderMinutes(customValue) : { amount: 45, unit: "分钟" as ReminderUnit };
+  const [customOpen, setCustomOpen] = useState(customValue > 0);
+  // 只有用户真的填过自定义值才写进提醒文本，避免"点开就塞一个默认值"越加越多
+  const [customTouched, setCustomTouched] = useState(customValue > 0);
+  const [amount, setAmount] = useState(String(initial.amount));
+  const [unit, setUnit] = useState<ReminderUnit>(initial.unit);
+
+  const commit = (nextPresets: number[], open: boolean, nextAmount: string, nextUnit: ReminderUnit, touched = customTouched) => {
+    let minutes = [...nextPresets];
+    if (open && touched) {
+      const size = Math.max(1, Math.round(Number(nextAmount) || 0));
+      const custom = size * UNIT_MINUTES[nextUnit];
+      // 自定义值和预设档位撞上时只留一条，免得写成"提前2小时、2小时"
+      minutes = minutes.filter((value) => value !== custom);
+      minutes.push(custom);
+    }
+    onChange(buildReminderText(minutes));
+  };
+
+  return (
+    <div className={`reminder-choices ${className ?? ""}`}>
+      <span>提醒：</span>
+      {REMINDER_CHOICES.map((choice) => {
+        const selected = presets.includes(choice.minutes);
+        return (
+          <label key={choice.minutes} className={selected ? "on" : ""}>
+            <input
+              type="checkbox"
+              checked={selected}
+              onChange={(event) => {
+                const nextPresets = event.target.checked
+                  ? [...presets, choice.minutes]
+                  : presets.filter((minutes) => minutes !== choice.minutes);
+                commit(nextPresets, customOpen, amount, unit);
+              }}
+            />
+            {choice.label}
+          </label>
+        );
+      })}
+      <label className={customOpen ? "on" : ""}>
+        <input
+          type="checkbox"
+          checked={customOpen}
+          onChange={(event) => {
+            const open = event.target.checked;
+            setCustomOpen(open);
+            // 打开时不立刻写入，等用户真的填了数值；关闭时把自定义值去掉
+            if (!open) {
+              setCustomTouched(false);
+              commit(presets, false, amount, unit, false);
+            }
+          }}
+        />
+        自定义
+      </label>
+      {customOpen ? (
+        <span className="reminder-custom">
+          <input
+            type="number"
+            min={1}
+            max={999}
+            value={amount}
+            onChange={(event) => {
+              setAmount(event.target.value);
+              setCustomTouched(true);
+              commit(presets, true, event.target.value, unit, true);
+            }}
+            aria-label="自定义提醒数值"
+          />
+          <select
+            value={unit}
+            onChange={(event) => {
+              const nextUnit = event.target.value as ReminderUnit;
+              setUnit(nextUnit);
+              setCustomTouched(true);
+              commit(presets, true, amount, nextUnit, true);
+            }}
+            aria-label="自定义提醒单位"
+          >
+            {REMINDER_UNITS.map((item) => <option key={item} value={item}>{item}</option>)}
+          </select>
+          <span className="reminder-custom-hint">提前 {formatReminderMinutes(Math.max(1, Math.round(Number(amount) || 0)) * UNIT_MINUTES[unit])}</span>
+        </span>
+      ) : null}
+    </div>
+  );
+}
+
+/** 任务附图：读成 data URL；太大的先压到 1600px 以内，避免任务记录过大 */
+async function readAttachmentImage(file: File): Promise<string> {
+  const dataUrl = await readAsDataUrl(file);
+  if (!file.type.startsWith("image/") || file.type === "image/gif") return dataUrl;
+  try {
+    const image = await loadImageElement(dataUrl);
+    const scale = Math.min(1, 1600 / Math.max(image.naturalWidth, image.naturalHeight));
+    if (scale >= 1 && dataUrl.length < 400_000) return dataUrl;
+    const canvas = document.createElement("canvas");
+    canvas.width = Math.max(1, Math.round(image.naturalWidth * scale));
+    canvas.height = Math.max(1, Math.round(image.naturalHeight * scale));
+    const context = canvas.getContext("2d");
+    if (!context) return dataUrl;
+    context.drawImage(image, 0, 0, canvas.width, canvas.height);
+    return canvas.toDataURL("image/jpeg", 0.82);
+  } catch {
+    return dataUrl;
+  }
+}
+
+function loadImageElement(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve(image);
+    image.onerror = () => reject(new Error("IMAGE_LOAD_FAILED"));
+    image.src = src;
+  });
+}
+
+/** 新建任务默认给今天 23:59（不是写死的旧日期，否则一建出来就逾期） */
+function defaultTaskDueAt() {
+  const due = new Date();
+  due.setHours(23, 59, 0, 0);
+  return toLocalInputValue(due.toISOString());
+}
+
 function TasksView({
   tasks, courseMap, courses, resources, showForm, setShowForm, title, setTitle, courseId, setCourseId,
-  dueAt, setDueAt, taskType, setTaskType, priority, setPriority, reminderMinutes, setReminderMinutes,
-  onCreate, onComplete, onDelete, onUpdate, onOpenResource,
+  dueAt, setDueAt, taskType, setTaskType, priority, setPriority, reminder, setReminder,
+  resourceId, setResourceId, images, setImages,
+  onCreate, onComplete, onDelete, onUpdate, onOpenResource, onCreateCourse,
 }: {
   tasks: Task[];
   courseMap: Map<string, Course>;
@@ -2856,13 +3088,18 @@ function TasksView({
   setTaskType: (value: Task["type"]) => void;
   priority: Task["priority"];
   setPriority: (value: Task["priority"]) => void;
-  reminderMinutes: number[];
-  setReminderMinutes: (value: number[]) => void;
+  reminder: string;
+  setReminder: (value: string) => void;
+  resourceId: string;
+  setResourceId: (value: string) => void;
+  images: string[];
+  setImages: (value: string[]) => void;
   onCreate: () => void;
   onComplete: (id: string) => void;
   onDelete: (id: string) => void;
   onUpdate: (id: string, patch: Partial<Task>) => void;
   onOpenResource: (resourceId: string) => void;
+  onCreateCourse: (name: string) => string | null;
 }) {
   const now = new Date();
   const [courseFilter, setCourseFilter] = useState("");
@@ -2870,6 +3107,8 @@ function TasksView({
   const [statusFilter, setStatusFilter] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+  const [viewing, setViewing] = useState<{ images: string[]; index: number } | null>(null);
+  const [imageError, setImageError] = useState("");
 
   const decorated = tasks.map((task) => ({ task, status: deriveTaskStatus(task, now) }));
   const filtered = decorated.filter(({ task, status }) => {
@@ -2883,6 +3122,23 @@ function TasksView({
   const todayCount = decorated.filter((item) => item.status !== "已逾期" && isDueToday(item.task, now)).length;
   const groups = groupTasks(filtered.map((item) => item.task), now);
   const statusOf = new Map(decorated.map((item) => [item.task.id, item.status]));
+  const openImages = (list: string[], index = 0) => setViewing({ images: list, index });
+
+  // 附图：用户自己选，最多 6 张；大图会先压一下再存（任务数据要参与云同步）
+  const addImages = async (files: File[]) => {
+    const room = Math.max(0, MAX_TASK_IMAGES - images.length);
+    if (!files.length || room === 0) {
+      if (room === 0) setImageError(`最多附带 ${MAX_TASK_IMAGES} 张图片。`);
+      return;
+    }
+    try {
+      const urls = await Promise.all(files.slice(0, room).map(readAttachmentImage));
+      setImages([...images, ...urls]);
+      setImageError("");
+    } catch {
+      setImageError("图片读取失败，换一张再试试。");
+    }
+  };
 
   return (
     <div className="page-view">
@@ -2903,41 +3159,64 @@ function TasksView({
 
       {showForm ? (
         <div className="inline-form">
-          <div className="form-title">新建任务 <span>提醒规则可多选；留空则默认提前 1 天</span></div>
+          <div className="form-title">新建任务 <span>提醒规则可多选，也能自己填；不选就默认提前 1 天</span></div>
           <div className="form-grid task-form">
             <input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="任务名称" />
-            <select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select>
-            <input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} />
-            <select value={taskType} onChange={(event) => setTaskType(event.target.value as Task["type"])}>
+            <CoursePicker
+              value={courseId}
+              onChange={(nextCourseId) => {
+                setCourseId(nextCourseId);
+                const stillValid = resources.some((item) => item.id === resourceId && item.courseId === nextCourseId);
+                if (!stillValid) setResourceId("");
+              }}
+              courses={courses}
+              onCreateCourse={onCreateCourse}
+              ariaLabel="任务课程"
+            />
+            <input type="datetime-local" value={dueAt} onChange={(event) => setDueAt(event.target.value)} aria-label="任务截止" />
+            <select value={taskType} onChange={(event) => setTaskType(event.target.value as Task["type"])} aria-label="任务类型">
               <option value="DDL">DDL</option>
               <option value="考试">考试</option>
               <option value="复习">复习</option>
             </select>
-            <select value={priority} onChange={(event) => setPriority(event.target.value as Task["priority"])}>
+            <select value={priority} onChange={(event) => setPriority(event.target.value as Task["priority"])} aria-label="任务优先级">
               <option value="高">高优先级</option>
               <option value="中">中优先级</option>
               <option value="低">低优先级</option>
             </select>
+            <select value={resourceId} onChange={(event) => setResourceId(event.target.value)} aria-label="关联资料">
+              <option value="">不关联资料</option>
+              {resources.filter((item) => item.courseId === courseId).map((item) => (
+                <option key={item.id} value={item.id}>{item.title}</option>
+              ))}
+            </select>
             <button className="primary-button" onClick={onCreate}>保存任务</button>
           </div>
-          <div className="reminder-choices">
-            <span>提醒：</span>
-            {REMINDER_CHOICES.map((choice) => (
-              <label key={choice.minutes} className={reminderMinutes.includes(choice.minutes) ? "on" : ""}>
-                <input
-                  type="checkbox"
-                  checked={reminderMinutes.includes(choice.minutes)}
-                  onChange={(event) => {
-                    setReminderMinutes(
-                      event.target.checked
-                        ? [...reminderMinutes, choice.minutes]
-                        : reminderMinutes.filter((value) => value !== choice.minutes),
-                    );
-                  }}
-                />
-                {choice.label}
-              </label>
+          <ReminderPicker value={reminder} onChange={setReminder} />
+          <div className="task-attach-row">
+            <span className="task-attach-label">附带图片（可选）：</span>
+            {images.map((src, index) => (
+              <span className="task-attach-thumb" key={`${index}-${src.slice(0, 20)}`}>
+                <button type="button" className="thumb-button" onClick={() => openImages(images, index)} title="查看这张图">
+                  <img src={src} alt={`附图 ${index + 1}`} />
+                </button>
+                <button type="button" className="thumb-remove" onClick={() => setImages(images.filter((_, i) => i !== index))} aria-label={`移除第 ${index + 1} 张图片`}>×</button>
+              </span>
             ))}
+            <label className="image-attach-button">
+              ＋ 选择图片
+              <input
+                type="file"
+                accept="image/*"
+                multiple
+                className="visually-hidden"
+                onChange={(event) => {
+                  void addImages([...(event.target.files ?? [])]);
+                  event.target.value = "";
+                }}
+              />
+            </label>
+            {imageError ? <span className="queue-error inline">{imageError}</span> : null}
           </div>
         </div>
       ) : null}
@@ -2958,6 +3237,7 @@ function TasksView({
           <option value="未开始">未开始</option>
           <option value="进行中">进行中</option>
           <option value="已逾期">已逾期</option>
+          <option value="已完成">已完成</option>
         </select>
         {(courseFilter || typeFilter || statusFilter) ? (
           <button className="text-button" onClick={() => { setCourseFilter(""); setTypeFilter(""); setStatusFilter(""); }}>清除筛选</button>
@@ -2967,69 +3247,114 @@ function TasksView({
 
       {groups.length === 0 ? (
         <EmptyState title="没有符合条件的任务" copy="换个筛选条件，或点右上角新建一条任务。" />
-      ) : groups.map((group) => (
-        <div className="task-group" key={group.label}>
-          <div className={`task-group-label ${group.label === "已逾期" ? "overdue" : ""}`}>
+      ) : groups.map((group, groupIndex) => (
+        <div
+          className={`task-group ${groupIndex > 0 && isOverdueGroup(group.label) ? "overdue-sep" : ""} ${groupIndex > 0 && group.label === "已完成" ? "done-sep" : ""}`}
+          key={group.label}
+        >
+          <div className={`task-group-label ${isOverdueGroup(group.label) ? "overdue" : ""}`}>
             {group.label} · {group.items.length}
           </div>
           {group.items.map((task) => {
             const status = statusOf.get(task.id) ?? task.status;
             const linked = task.resourceId ? resources.find((item) => item.id === task.resourceId) : undefined;
             const editing = editingId === task.id;
+            const taskImages = task.images ?? [];
             return (
               <div className={`task-row ${status === "已逾期" ? "overdue" : ""}`} key={task.id}>
                 <div className={`task-marker ${task.priority === "高" ? "high" : status === "已逾期" ? "overdue" : ""}`} />
+                {!editing && taskImages.length ? (
+                  <button type="button" className="task-thumb" onClick={() => openImages(taskImages, 0)} title="查看任务附图">
+                    <img src={taskImages[0]} alt="任务附图" />
+                    {taskImages.length > 1 ? <span className="task-thumb-count">{taskImages.length}</span> : null}
+                  </button>
+                ) : null}
                 {editing ? (
-                  <div className="task-edit-grid">
-                    <input value={task.title} onChange={(event) => onUpdate(task.id, { title: event.target.value })} aria-label="任务名称" />
-                    <select value={task.courseId} onChange={(event) => onUpdate(task.id, { courseId: event.target.value })} aria-label="任务课程">
-                      {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
-                    </select>
-                    <input type="datetime-local" value={task.dueAt} onChange={(event) => onUpdate(task.id, { dueAt: event.target.value })} aria-label="任务截止" />
-                    <select value={task.type} onChange={(event) => onUpdate(task.id, { type: event.target.value as Task["type"] })} aria-label="任务类型">
-                      <option value="DDL">DDL</option>
-                      <option value="考试">考试</option>
-                      <option value="复习">复习</option>
-                    </select>
-                    <select value={task.priority} onChange={(event) => onUpdate(task.id, { priority: event.target.value as Task["priority"] })} aria-label="任务优先级">
-                      <option value="高">高</option>
-                      <option value="中">中</option>
-                      <option value="低">低</option>
-                    </select>
-                    <select
-                      value={task.resourceId ?? ""}
-                      onChange={(event) => onUpdate(task.id, { resourceId: event.target.value || undefined })}
-                      aria-label="关联资料"
-                    >
-                      <option value="">不关联资料</option>
-                      {resources.filter((item) => item.courseId === task.courseId).map((item) => (
-                        <option key={item.id} value={item.id}>{item.title}</option>
-                      ))}
-                    </select>
-                    <div className="reminder-choices task-edit-reminders">
-                      <span>提醒：</span>
-                      {REMINDER_CHOICES.map((choice) => {
-                        const selected = parseReminderText(task.reminder).includes(choice.minutes);
-                        return (
-                          <label key={choice.minutes} className={selected ? "on" : ""}>
-                            <input
-                              type="checkbox"
-                              checked={selected}
-                              onChange={(event) => {
-                                const current = parseReminderText(task.reminder);
-                                const next = event.target.checked
-                                  ? [...current, choice.minutes]
-                                  : current.filter((value) => value !== choice.minutes);
-                                onUpdate(task.id, { reminder: buildReminderText(next) });
-                              }}
-                            />
-                            {choice.label}
-                          </label>
-                        );
-                      })}
+                  <div className="task-edit-wrap">
+                    <div className="task-media-panel">
+                      <span className="task-media-title">附图</span>
+                      <div className="task-media-list">
+                        {taskImages.map((src, index) => (
+                          <span className="task-attach-thumb" key={`${index}-${src.slice(0, 20)}`}>
+                            <button type="button" className="thumb-button" onClick={() => openImages(taskImages, index)} title="查看这张图">
+                                        <img src={src} alt={`附图 ${index + 1}`} />
+                            </button>
+                            <button
+                              type="button"
+                              className="thumb-remove"
+                              aria-label={`移除第 ${index + 1} 张图片`}
+                              onClick={() => onUpdate(task.id, { images: taskImages.filter((_, i) => i !== index) })}
+                            >
+                              ×
+                            </button>
+                          </span>
+                        ))}
+                        <label className="image-attach-button small">
+                          ＋ 加图
+                          <input
+                            type="file"
+                            accept="image/*"
+                            multiple
+                            className="visually-hidden"
+                            onChange={async (event) => {
+                              const files = [...(event.target.files ?? [])];
+                              event.target.value = "";
+                              const room = Math.max(0, MAX_TASK_IMAGES - taskImages.length);
+                              if (!files.length || room === 0) return;
+                              const urls = await Promise.all(files.slice(0, room).map(readAttachmentImage));
+                              onUpdate(task.id, { images: [...taskImages, ...urls] });
+                            }}
+                          />
+                        </label>
+                      </div>
+                      {taskImages.length ? (
+                        <button type="button" className="text-button" onClick={() => openImages(taskImages, 0)}>看大图</button>
+                      ) : (
+                        <span className="task-media-hint">没附图</span>
+                      )}
                     </div>
-                    <div className="task-edit-actions">
-                      <button className="quiet-button" onClick={() => setEditingId(null)}>完成编辑</button>
+                    <div className="task-edit-grid">
+                      <input value={task.title} onChange={(event) => onUpdate(task.id, { title: event.target.value })} aria-label="任务名称" />
+                      <CoursePicker
+                        value={task.courseId}
+                        onChange={(nextCourseId) => {
+                          const stillValid = resources.some((item) => item.id === task.resourceId && item.courseId === nextCourseId);
+                          onUpdate(task.id, stillValid || !task.resourceId ? { courseId: nextCourseId } : { courseId: nextCourseId, resourceId: undefined });
+                        }}
+                        courses={courses}
+                        onCreateCourse={onCreateCourse}
+                        ariaLabel="任务课程"
+                      />
+                      <input type="datetime-local" value={task.dueAt} onChange={(event) => onUpdate(task.id, { dueAt: event.target.value })} aria-label="任务截止" />
+                      <select value={task.type} onChange={(event) => onUpdate(task.id, { type: event.target.value as Task["type"] })} aria-label="任务类型">
+                        <option value="DDL">DDL</option>
+                        <option value="考试">考试</option>
+                        <option value="复习">复习</option>
+                      </select>
+                      <select value={task.priority} onChange={(event) => onUpdate(task.id, { priority: event.target.value as Task["priority"] })} aria-label="任务优先级">
+                        <option value="高">高</option>
+                        <option value="中">中</option>
+                        <option value="低">低</option>
+                      </select>
+                      <select
+                        value={task.resourceId ?? ""}
+                        onChange={(event) => onUpdate(task.id, { resourceId: event.target.value || undefined })}
+                        aria-label="关联资料"
+                      >
+                        <option value="">不关联资料</option>
+                        {resources.filter((item) => item.courseId === task.courseId).map((item) => (
+                          <option key={item.id} value={item.id}>{item.title}</option>
+                        ))}
+                      </select>
+                      <ReminderPicker
+                        key={task.id}
+                        value={task.reminder}
+                        onChange={(next) => onUpdate(task.id, { reminder: next })}
+                        className="task-edit-reminders"
+                      />
+                      <div className="task-edit-actions">
+                        <button className="quiet-button" onClick={() => setEditingId(null)}>完成编辑</button>
+                      </div>
                     </div>
                   </div>
                 ) : (
@@ -3038,6 +3363,7 @@ function TasksView({
                     <span>
                       {courseMap.get(task.courseId)?.name ?? "未分类"} · {task.type} · {task.reminder}
                       {linked ? <> · <button className="text-button inline" onClick={() => onOpenResource(linked.id)}>查看资料：{linked.title}</button></> : null}
+                      {taskImages.length ? <> · <button className="text-button inline" onClick={() => openImages(taskImages, 0)}>查看图片（{taskImages.length}）</button></> : null}
                     </span>
                   </div>
                 )}
@@ -3054,7 +3380,11 @@ function TasksView({
                     ) : (
                       <button className="text-button" onClick={() => setPendingDeleteId(task.id)}>删除</button>
                     )}
-                    <button className="complete-button" onClick={() => onComplete(task.id)}>完成</button>
+                    {status === "已完成" ? (
+                      <button className="complete-button" onClick={() => onUpdate(task.id, { status: "未开始" })}>恢复</button>
+                    ) : (
+                      <button className="complete-button" onClick={() => onComplete(task.id)}>完成</button>
+                    )}
                   </div>
                 ) : null}
               </div>
@@ -3062,9 +3392,37 @@ function TasksView({
           })}
         </div>
       ))}
+
+      {viewing ? (
+        <div className="image-viewer" role="dialog" aria-label="任务附图" onClick={() => setViewing(null)}>
+          <div className="image-viewer-inner" onClick={(event) => event.stopPropagation()}>
+            <img src={viewing.images[viewing.index]} alt={`附图 ${viewing.index + 1}`} />
+            <div className="image-viewer-bar">
+              <button
+                className="quiet-button"
+                disabled={viewing.images.length < 2}
+                onClick={() => setViewing({ images: viewing.images, index: (viewing.index + viewing.images.length - 1) % viewing.images.length })}
+              >
+                上一张
+              </button>
+              <span>{viewing.index + 1} / {viewing.images.length}</span>
+              <button
+                className="quiet-button"
+                disabled={viewing.images.length < 2}
+                onClick={() => setViewing({ images: viewing.images, index: (viewing.index + 1) % viewing.images.length })}
+              >
+                下一张
+              </button>
+              <a className="quiet-button" href={viewing.images[viewing.index]} download={`任务附图-${viewing.index + 1}`}>下载</a>
+              <button className="quiet-button" onClick={() => setViewing(null)}>关闭</button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }
+
 function ReviewView({ courses, running, plan, confirmError, onGenerate, onApprovePlan, onRejectPlan }: { courses: Course[]; running: boolean; plan: PlanConfirmState | null; confirmError: string; onGenerate: (courseId: string, examAt: string, availability: string) => void; onApprovePlan: () => void; onRejectPlan: () => void; }) {
   const [courseId, setCourseId] = useState(courses[0]?.id ?? "");
   const [examAt, setExamAt] = useState(() => toLocalInputValue(new Date(Date.now() + 7 * 86_400_000).toISOString()));

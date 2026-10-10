@@ -22,45 +22,67 @@ export function isTaskOverdue(task: Task, now: Date = new Date()): boolean {
   return deriveTaskStatus(task, now) === "已逾期";
 }
 
-export type TaskGroupLabel = "已逾期" | "今天" | "明天" | "本周" | "更晚" | "无截止时间";
+export type TaskGroupLabel = "今天" | "明天" | "本周" | "更晚" | "无截止时间" | "已逾期" | "已完成";
 
 export type TaskGroup = { label: TaskGroupLabel; items: Task[] };
 
-/** 按时间分组：已逾期 → 今天 → 明天 → 本周 → 更晚。组内按截止时间升序。 */
+/** 分组顺序：还没过期的事排前面，已逾期与已完成沉到最后。组内按截止时间升序。 */
+export const TASK_GROUP_ORDER: TaskGroupLabel[] = [
+  "今天",
+  "明天",
+  "本周",
+  "更晚",
+  "无截止时间",
+  "已逾期",
+  "已完成",
+];
+
 export function groupTasks(tasks: Task[], now: Date = new Date()): TaskGroup[] {
   const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
   const startOfTomorrow = startOfToday + DAY_MS;
   const startOfDayAfter = startOfTomorrow + DAY_MS;
   const weekEnd = startOfToday + 7 * DAY_MS;
 
-  const groups: TaskGroup[] = [
-    { label: "已逾期", items: [] },
-    { label: "今天", items: [] },
-    { label: "明天", items: [] },
-    { label: "本周", items: [] },
-    { label: "更晚", items: [] },
-    { label: "无截止时间", items: [] },
-  ];
+  const buckets: Record<TaskGroupLabel, Task[]> = {
+    今天: [],
+    明天: [],
+    本周: [],
+    更晚: [],
+    无截止时间: [],
+    已逾期: [],
+    已完成: [],
+  };
 
   for (const task of tasks) {
     const due = new Date(task.dueAt).getTime();
     if (Number.isNaN(due)) {
-      groups[5].items.push(task);
+      buckets["无截止时间"].push(task);
       continue;
     }
-    if (due < now.getTime() && task.status !== "已完成") groups[0].items.push(task);
-    else if (due < startOfTomorrow) groups[1].items.push(task);
-    else if (due < startOfDayAfter) groups[2].items.push(task);
-    else if (due < weekEnd) groups[3].items.push(task);
-    else groups[4].items.push(task);
+    // 已完成的任务不再算逾期，单独收在最后一组
+    if (task.status === "已完成") {
+      buckets["已完成"].push(task);
+      continue;
+    }
+    if (due < now.getTime()) {
+      buckets["已逾期"].push(task);
+      continue;
+    }
+    if (due < startOfTomorrow) buckets["今天"].push(task);
+    else if (due < startOfDayAfter) buckets["明天"].push(task);
+    else if (due < weekEnd) buckets["本周"].push(task);
+    else buckets["更晚"].push(task);
   }
 
-  return groups
-    .map((group) => ({
-      ...group,
-      items: [...group.items].sort((a, b) => (a.dueAt || "9999").localeCompare(b.dueAt || "9999")),
-    }))
-    .filter((group) => group.items.length > 0);
+  return TASK_GROUP_ORDER.map((label) => ({
+    label,
+    items: [...buckets[label]].sort((a, b) => (a.dueAt || "9999").localeCompare(b.dueAt || "9999")),
+  })).filter((group) => group.items.length > 0);
+}
+
+/** 是否是"已逾期"这类需要提醒用户的组 */
+export function isOverdueGroup(label: TaskGroupLabel) {
+  return label === "已逾期";
 }
 
 /** 任务是否落在今天（用于"今天做什么"） */
@@ -81,16 +103,24 @@ export const REMINDER_CHOICES: ReminderChoice[] = [
   { minutes: 60, label: "提前 1 小时" },
 ];
 
+/** 把分钟数写成可读文字：3天 / 2小时 / 45分钟 */
+export function formatReminderMinutes(minutes: number): string {
+  if (minutes % 1440 === 0) return `${minutes / 1440}天`;
+  if (minutes % 60 === 0) return `${minutes / 60}小时`;
+  return `${minutes}分钟`;
+}
+
+/** 是不是预设里的那几档（用来判断"自定义"要不要点亮） */
+export function isPresetReminder(minutes: number): boolean {
+  return REMINDER_CHOICES.some((choice) => choice.minutes === minutes);
+}
+
 /** 把勾选的提醒组合成存储字符串，例如「提前3天、1天、2小时」 */
 export function buildReminderText(selectedMinutes: number[]): string {
-  if (!selectedMinutes.length) return "提前1天";
-  const ordered = [...new Set(selectedMinutes)].sort((a, b) => b - a);
-  const parts = ordered.map((minutes) => {
-    if (minutes % 1440 === 0) return `${minutes / 1440}天`;
-    if (minutes % 60 === 0) return `${minutes / 60}小时`;
-    return `${minutes}分钟`;
-  });
-  return `提前${parts.join("、")}`;
+  const options = [...new Set(selectedMinutes.filter((value) => Number.isFinite(value) && value > 0))];
+  if (!options.length) return "提前1天";
+  const ordered = options.sort((a, b) => b - a);
+  return `提前${ordered.map(formatReminderMinutes).join("、")}`;
 }
 
 /** 从存储字符串解析出勾选状态 */

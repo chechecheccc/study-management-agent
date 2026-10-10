@@ -112,6 +112,10 @@ export const tasks = pgTable(
     status: text("status").notNull().default("未开始"),
     priority: text("priority").notNull().default("中"),
     reminder: text("reminder").notNull().default(""),
+    /** 关联的资料 id（复习任务可以挂在具体课件/笔记上） */
+    resourceId: text("resource_id"),
+    /** 用户自己选择上传的任务附图（data URL） */
+    images: jsonb("images").$type<string[]>().notNull().default([]),
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
   },

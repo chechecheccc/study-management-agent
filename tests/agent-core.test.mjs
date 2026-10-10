@@ -485,7 +485,16 @@ test("会话时间标注：今天显示时分，昨天显示昨天，更早显�
 
 // ---------- 任务中心逻辑测试 ----------
 
-import { deriveTaskStatus, groupTasks, isDueToday, buildReminderText, parseReminderText } from "../app/lib/task-utils.ts";
+import {
+  deriveTaskStatus,
+  groupTasks,
+  isDueToday,
+  buildReminderText,
+  parseReminderText,
+  formatReminderMinutes,
+  isOverdueGroup,
+  isPresetReminder,
+} from "../app/lib/task-utils.ts";
 
 const makeTask = (over) => ({
   id: over.id ?? "t", title: over.title ?? "任务", courseId: "c1",
@@ -505,7 +514,7 @@ test("逾期自动判定：过截止未完成算逾期，已完成不受影响",
   assert.equal(deriveTaskStatus(makeTask({ dueAt: "不是日期" }), now), "未开始");
 });
 
-test("任务分组：已逾期 / 今天 / 明天 / 本周 / 更晚", () => {
+test("任务分组：未逾期在前（今天/明天/本周/更晚），已逾期与已完成沉到最后", () => {
   const now = new Date("2026-10-08T12:00:00+08:00");
   const groups = groupTasks([
     makeTask({ id: "overdue", dueAt: "2026-10-01T09:00" }),
@@ -513,14 +522,20 @@ test("任务分组：已逾期 / 今天 / 明天 / 本周 / 更晚", () => {
     makeTask({ id: "tomorrow", dueAt: "2026-10-09T09:00" }),
     makeTask({ id: "week", dueAt: "2026-10-12T09:00" }),
     makeTask({ id: "later", dueAt: "2026-11-01T09:00" }),
+    makeTask({ id: "done", dueAt: "2026-09-01T09:00", status: "已完成" }),
   ], now);
-  assert.deepEqual(groups.map((g) => g.label), ["已逾期", "今天", "明天", "本周", "更晚"]);
-  assert.deepEqual(groups[0].items.map((t) => t.id), ["overdue"]);
-  assert.deepEqual(groups[1].items.map((t) => t.id), ["today"]);
-  assert.deepEqual(groups[4].items.map((t) => t.id), ["later"]);
-  // 已完成的任务不会进"已逾期"
-  const withDone = groupTasks([makeTask({ id: "done", dueAt: "2026-10-01T09:00", status: "已完成" })], now);
-  assert.equal(withDone.some((g) => g.label === "已逾期"), false);
+  assert.deepEqual(groups.map((g) => g.label), ["今天", "明天", "本周", "更晚", "已逾期", "已完成"]);
+  assert.equal(groups[0].items[0].id, "today");
+  assert.deepEqual(groups[4].items.map((t) => t.id), ["overdue"]);
+  assert.deepEqual(groups[5].items.map((t) => t.id), ["done"]);
+  // 未逾期的一律排在已逾期之前
+  const labels = groups.map((g) => g.label);
+  assert.ok(labels.indexOf("已逾期") > labels.indexOf("更晚"));
+  // 没有截止时间的任务算"无截止时间"，也不进逾期组
+  const noDue = groupTasks([makeTask({ id: "nodue", dueAt: "" })], now);
+  assert.deepEqual(noDue.map((g) => g.label), ["无截止时间"]);
+  assert.equal(isOverdueGroup("已逾期"), true);
+  assert.equal(isOverdueGroup("今天"), false);
 });
 
 test("今天判定与提醒规则组合", () => {
@@ -534,5 +549,16 @@ test("今天判定与提醒规则组合", () => {
   assert.equal(buildReminderText([]), "提前1天");
   assert.deepEqual(parseReminderText("提前3天、1天、2小时").sort((a, b) => a - b), [120, 1440, 4320]);
   assert.deepEqual(parseReminderText("提前30分钟"), [30]);
+  // 自定义提醒：任意分钟数都能写进去、读回来
+  assert.equal(buildReminderText([90]), "提前90分钟");
+  assert.equal(buildReminderText([90, 1440]), "提前1天、90分钟");
+  assert.equal(buildReminderText([10080]), "提前7天");
+  assert.deepEqual(parseReminderText(buildReminderText([10080, 45])).sort((a, b) => a - b), [45, 10080]);
+  assert.equal(isPresetReminder(1440), true);
+  assert.equal(isPresetReminder(90), false);
+  assert.equal(formatReminderMinutes(4320), "3天");
+  assert.equal(formatReminderMinutes(90), "90分钟");
+  // 非法值不写进提醒文本
+  assert.equal(buildReminderText([0, Number.NaN, -5]), "提前1天");
 });
 

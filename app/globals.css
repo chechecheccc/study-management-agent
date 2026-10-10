@@ -608,3 +608,53 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 @media (max-width: 720px) { .task-edit-grid { grid-template-columns: 1fr; } }
 
 .task-edit-reminders { grid-column: 1 / -1; margin-top: 0; }
+
+/* ---------- 任务中心：课程快建、自定义提醒、任务附图 ---------- */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+
+.course-picker { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; min-width: 0; }
+.course-picker > select { flex: 1; min-width: 0; }
+.course-picker-new { display: flex; align-items: center; gap: 6px; width: 100%; }
+.course-picker-new input { flex: 1; min-width: 90px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 12px; background: #fff; }
+.course-picker-new .text-button { color: var(--coral-dark); }
+
+.reminder-custom { display: inline-flex; align-items: center; gap: 6px; }
+.reminder-custom input { width: 64px; border: 1px solid var(--line); border-radius: 8px; padding: 5px 8px; font-size: 12px; background: #fff; }
+.reminder-custom select { border: 1px solid var(--line); border-radius: 8px; padding: 5px 6px; font-size: 12px; background: #fff; }
+.reminder-custom-hint { color: #6d826d; font-size: 10px; }
+
+.task-attach-row { display: flex; align-items: center; flex-wrap: wrap; gap: 9px; margin-top: 12px; font-size: 11px; color: var(--muted); }
+.task-attach-label { font-size: 11px; }
+.task-attach-thumb { position: relative; display: inline-flex; }
+.thumb-button { border: 1px solid var(--line); background: #fff; border-radius: 9px; padding: 2px; width: 42px; height: 42px; overflow: hidden; }
+.thumb-button img { width: 100%; height: 100%; object-fit: cover; border-radius: 7px; display: block; }
+.thumb-remove { position: absolute; top: -6px; right: -6px; width: 17px; height: 17px; border: 0; border-radius: 50%; background: #d98a7c; color: #fff; font-size: 10px; line-height: 1; }
+.image-attach-button { border: 1px dashed #cfd4c8; background: #fff; color: #7d8a7f; border-radius: 9px; padding: 9px 12px; font-size: 11px; cursor: pointer; }
+.image-attach-button:hover { border-color: var(--coral); color: var(--coral-dark); }
+.image-attach-button.small { padding: 6px 9px; font-size: 10px; width: 100%; text-align: center; }
+.queue-error.inline { margin: 0; }
+
+.task-row .task-thumb { position: relative; flex: none; width: 34px; height: 34px; border: 1px solid var(--line); border-radius: 8px; padding: 0; overflow: hidden; background: #fff; }
+.task-row .task-thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.task-thumb-count { position: absolute; right: 1px; bottom: 1px; background: rgba(38,45,40,.72); color: #fff; font-size: 8px; border-radius: 5px; padding: 0 3px; }
+
+.task-edit-wrap { display: flex; align-items: flex-start; gap: 10px; flex: 1; min-width: 0; }
+.task-media-panel { flex: none; width: 92px; display: grid; gap: 6px; justify-items: start; }
+.task-media-title { font-size: 10px; color: var(--muted); letter-spacing: .08em; }
+.task-media-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.task-media-hint { font-size: 10px; color: #a8b0a6; }
+
+.task-group.overdue-sep { margin-top: 20px; padding-top: 12px; border-top: 1px dashed #e4d6cd; }
+.task-group.done-sep { margin-top: 20px; padding-top: 12px; border-top: 1px dashed var(--line); }
+
+.image-viewer { position: fixed; inset: 0; background: rgba(24,28,25,.72); display: grid; place-items: center; z-index: 60; padding: 24px; }
+.image-viewer-inner { background: #fffdf8; border-radius: 16px; padding: 14px; max-width: min(920px, 92vw); max-height: 88vh; display: grid; gap: 10px; }
+.image-viewer-inner img { max-width: 100%; max-height: 68vh; border-radius: 10px; object-fit: contain; }
+.image-viewer-bar { display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 11px; color: var(--muted); }
+.image-viewer-bar a.quiet-button { text-decoration: none; display: inline-flex; align-items: center; }
+
+@media (max-width: 720px) {
+  .task-edit-wrap { flex-direction: column; }
+  .task-media-panel { width: 100%; }
+  .task-media-list { flex-direction: row; }
+}

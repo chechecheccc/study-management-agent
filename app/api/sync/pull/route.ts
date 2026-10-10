@@ -67,6 +67,8 @@ export async function GET(request: Request) {
           status: row.status,
           priority: row.priority,
           reminder: row.reminder,
+          resourceId: row.resourceId ?? undefined,
+          images: row.images ?? [],
           updatedAt: row.updatedAt,
           deletedAt: row.deletedAt,
         })),

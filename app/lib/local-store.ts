@@ -50,6 +50,8 @@ export type Task = {
   reminder: string;
   /** 关联的资料（复习任务可绑定到具体课件/笔记） */
   resourceId?: string;
+  /** 附带的图片（data URL，用户自己选择是否上传） */
+  images?: string[];
   updatedAt?: string;
 };
 
