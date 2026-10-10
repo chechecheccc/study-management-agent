@@ -1,3 +1,4 @@
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 // 服务端接口测试：账号 / 会话 / 云备份 / 账号隔离
 // 说明：同步相关断言使用**每次新注册的账号**，避免历史数据累积影响断言；
 // 认证相关断言仍使用预置的管理员账号。
@@ -93,6 +94,7 @@ check("登出后会话失效", r.data?.user === null);
 r = await call("/api/auth/register", { method: "POST", body: JSON.stringify({ username: NEW_USER, password: "test123456" }) });
 check("重复用户名被拒绝", r.status === 400, `status=${r.status}`);
 
+await cleanupTestAccounts();
 const failed = results.filter((x) => !x.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);

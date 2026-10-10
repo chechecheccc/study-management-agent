@@ -1,3 +1,4 @@
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 // 验证复合主键：两个账号使用相同的固定 id（演示数据就是这样）时不应互相覆盖
 const BASE = "http://localhost:3000";
 const results = [];
@@ -50,6 +51,7 @@ check("A 的数据未被 B 覆盖", r.data?.data?.courses?.[0]?.name === "A 的�
 check("A 的任务未被覆盖", r.data?.data?.tasks?.[0]?.title === "A 的任务", `task=${r.data?.data?.tasks?.[0]?.title}`);
 check("A 的消息未被覆盖", r.data?.data?.conversations?.[0]?.messages?.[0]?.text === "A 的消息", `msg=${r.data?.data?.conversations?.[0]?.messages?.[0]?.text}`);
 
+await cleanupTestAccounts();
 const failed = results.filter((x) => !x.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);

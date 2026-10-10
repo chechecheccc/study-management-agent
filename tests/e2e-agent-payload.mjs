@@ -2,6 +2,7 @@
 // 历史 bug：PDF 里的 𝑢/𝐿 这类符号被按字数截断成半个，DeepSeek 直接
 // "Failed to parse the request body as JSON: unexpected end of hex escape"，整轮对话直接失败。
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -54,6 +55,8 @@ try {
 } finally {
   await browser.close();
 }
+// 收尾：清掉测试注册的账号
+await cleanupTestAccounts();
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);

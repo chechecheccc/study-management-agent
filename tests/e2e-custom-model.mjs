@@ -1,6 +1,7 @@
 // 验证「设置 → 模型」：可以填自己的 OpenAI 兼容模型，填完后请求真的换成用户那套，
 // 恢复默认后又能回到内置模型；配置只存在本机浏览器里。
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -119,6 +120,8 @@ try {
 } finally {
   await browser.close();
 }
+// 收尾：清掉本次测试注册的账号，不让账号列表越测越长
+await cleanupTestAccounts();
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);

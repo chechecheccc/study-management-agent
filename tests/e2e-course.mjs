@@ -2,6 +2,7 @@
 // 注意：两份「机器学习」预设课件会被固定在那门课（见 app/lib/presets.ts），
 //      所以这里改用示例资料来验证"改所属课程"。
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -165,6 +166,8 @@ try {
 } finally {
   await browser.close();
 }
+// 收尾：清掉测试注册的账号
+await cleanupTestAccounts();
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);

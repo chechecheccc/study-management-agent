@@ -1,5 +1,6 @@
 // 端到端验证：界面登录 → 数据自动同步到 PostgreSQL → 新设备登录能看到
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -112,6 +113,8 @@ const tasks3 = (await p3.locator(".page-view").textContent()) ?? "";
 check("另一账号看不到该用户的数据（账号隔离）", !tasks3.includes("云同步验证任务XYZ"), `片段：${tasks3.replace(/\s+/g, " ").slice(0, 50)}`);
 
 await browser.close();
+// 收尾：清掉本次测试注册的账号，不让账号列表越测越长
+await cleanupTestAccounts();
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过  （测试账号：${USER}）`);
 process.exit(failed.length ? 1 : 0);

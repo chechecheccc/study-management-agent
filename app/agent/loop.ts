@@ -50,11 +50,23 @@ export const DEFAULT_MAX_STEPS = 8;
 
 export async function* runAgentLoop(deps: AgentLoopDeps): AsyncGenerator<LoopEvent, void> {
   const maxSteps = deps.maxSteps ?? DEFAULT_MAX_STEPS;
+  // 历史里的图片只保留最近一条带图消息：
+  // 每一步都重发所有老截图既费 token，也容易把请求体积顶到上限（报"对话内容过大"）。
+  const keepImagesAt = (() => {
+    for (let i = deps.history.length - 1; i >= 0; i -= 1) {
+      const message = deps.history[i];
+      if (message.role === "user" && (message.images ?? []).some((url) => /^data:image\//i.test(url))) return i;
+    }
+    return -1;
+  })();
   const messages: AgentWireMessage[] = [
-    ...deps.history.map((message) => ({
-      role: message.role,
-      content: toWireContent(message.content, message.role === "user" ? message.images : undefined),
-    })),
+    ...deps.history.map((message, index) => {
+      const wantsImages = message.role === "user" && index === keepImagesAt;
+      const images = wantsImages ? message.images : undefined;
+      // 图片被剔掉后，纯图消息会变成空文本，用占位符保留这一轮对话
+      const text = message.content || (message.images?.length ? "[图片]" : message.content);
+      return { role: message.role, content: toWireContent(text, images) };
+    }),
     { role: "user", content: toWireContent(deps.goal, deps.goalImages) },
   ];
   // 护栏：同一轮里"相同工具 + 相同参数"的只读调用只真正执行一次，之后复用结果。

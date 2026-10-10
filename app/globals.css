@@ -505,6 +505,12 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .account-actions input { width: 110px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11px; }
 .quiet-button.danger { background: #fae7e1; color: #975348; border-color: #e8c8bf; }
 .account-success { margin-top: 10px; border-radius: 9px; background: #eef4ea; color: #4f6b4c; padding: 9px 11px; font-size: 11px; }
+/* 测试账号：单独一块、默认收起，避免淹没正式账号 */
+.account-tests { margin-top: 18px; border-style: dashed; }
+.account-tests-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.account-tests-note { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.account-tests-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.account-tests .account-row { background: #fffdf8; }
 @media (max-width: 900px) { .account-grid { grid-template-columns: 1fr; } }
 
 /* ---------- 对话内多模态图片 ---------- */

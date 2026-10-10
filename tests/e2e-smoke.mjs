@@ -2,6 +2,7 @@
 // 用法：node tests/e2e-smoke.mjs   （需要 npm run dev 已在 3000 端口运行）
 import { createRequire } from "node:module";
 import { mkdir, writeFile } from "node:fs/promises";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
@@ -210,6 +211,8 @@ try {
   await browser.close();
 }
 
+// 收尾：清掉本次测试注册的账号，不让账号列表越测越长
+await cleanupTestAccounts();
 const failed = results.filter((r) => !r.ok);
 await writeFile(new URL("report.json", SHOTS), JSON.stringify({ results, consoleErrors }, null, 2));
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);

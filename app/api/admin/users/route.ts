@@ -3,7 +3,9 @@ import { eq } from "drizzle-orm";
 import { withPg } from "../../../../db/pg";
 import { sessions, users } from "../../../../db/schema";
 import { buildAccount } from "../../../lib/accounts";
+import { purgeAccount, purgeTestAccounts } from "../../../lib/admin-cleanup";
 import { registerUser, requireAdmin } from "../../../lib/server-auth";
+import { isTestUsername } from "../../../lib/test-accounts";
 
 /** 账号列表（含每个账号的数据量，便于管理员了解使用情况） */
 export async function GET(request: Request) {
@@ -34,6 +36,7 @@ export async function GET(request: Request) {
         disabled: row.disabled,
         createdAt: row.createdAt.toISOString(),
         lastLoginAt: row.lastLoginAt?.toISOString() ?? null,
+        test: isTestUsername(row.username),
       })),
     });
   } catch (error) {
@@ -117,27 +120,30 @@ export async function PATCH(request: Request) {
   }
 }
 
-/** 删除账号（连带其会话） */
+/** 删除账号（连带其会话与全部数据），或一键清理测试账号 */
 export async function DELETE(request: Request) {
   const auth = await requireAdmin(request);
   if (!auth.ok) return json({ ok: false, error: { message: auth.message } }, auth.status);
 
   try {
-    const payload = (await request.json()) as { userId?: string };
+    const payload = (await request.json()) as { userId?: string; mode?: string };
+
+    // 一键清理：删掉自动化测试注册出来的账号（保留管理员与初始化账号）
+    if (payload.mode === "test-accounts") {
+      const removed = await withPg((db) => purgeTestAccounts(db));
+      return json({ ok: true, removed: removed.length, usernames: removed });
+    }
+
     const userId = String(payload.userId ?? "");
     if (!userId) return json({ ok: false, error: { message: "缺少 userId。" } }, 400);
     if (userId === auth.user.id) return json({ ok: false, error: { message: "不能删除当前登录的账号。" } }, 400);
 
-    await withPg(async (db) => {
-      await db.delete(sessions).where(eq(sessions.userId, userId));
-      await db.delete(users).where(eq(users.id, userId));
-    });
+    await withPg((db) => purgeAccount(db, userId));
     return json({ ok: true });
   } catch (error) {
     return json({ ok: false, error: { message: explain(error) } }, 500);
   }
 }
-
 function explain(error: unknown) {
   const message = error instanceof Error ? error.message : "未知错误";
   if (message.includes("DATABASE_URL")) return "数据库未配置。";

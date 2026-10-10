@@ -17,7 +17,10 @@ export type UserAccount = {
   disabled?: boolean;
 };
 
-export type PublicAccount = Omit<UserAccount, "salt" | "hash" | "iterations">;
+export type PublicAccount = Omit<UserAccount, "salt" | "hash" | "iterations"> & {
+  /** 是不是自动化测试注册出来的账号（管理员列表里单独归组） */
+  test?: boolean;
+};
 
 export type SeedAccount = {
   username: string;

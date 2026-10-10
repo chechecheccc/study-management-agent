@@ -1383,10 +1383,12 @@ export default function Home() {
     setChatImages(next);
   };
 
+  // 聊天图片先压缩再附上：原图（尤其是截图）转成 data URL 后可能几 MB，
+  // 直接发会让 Agent 步骤请求超过体积上限（报"对话内容过大"），压缩后又快又省 token。
   const attachChatImages = (files: File[]) => {
     const images = files.filter((file) => file.type.startsWith("image/"));
     if (!images.length) return;
-    void Promise.all(images.slice(0, 4).map((file) => readAsDataUrl(file))).then((urls) => {
+    void Promise.all(images.slice(0, 4).map((file) => readAttachmentImage(file))).then((urls) => {
       syncChatImages([...chatImagesRef.current, ...urls].slice(0, 4));
     });
   };
@@ -2241,6 +2243,23 @@ export default function Home() {
     }
   };
 
+  // 一键清理测试账号（服务端删账号 + 它的全部数据）
+  const purgeTestAccounts = async (): Promise<number | null> => {
+    try {
+      const response = await fetch("/api/admin/users", {
+        method: "DELETE",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ mode: "test-accounts" }),
+      });
+      const body = (await response.json()) as { ok?: boolean; removed?: number };
+      if (!response.ok || !body.ok) return null;
+      await loadServerAccounts();
+      return typeof body.removed === "number" ? body.removed : 0;
+    } catch {
+      return null;
+    }
+  };
+
   // 删除资料：本地移除 + 删除原文件 + 上报云端（否则刷新会被同步回来）
   const deleteResource = async (resource: Resource) => {
     // 预设资料删掉后记一笔，避免下次登录又被补回来
@@ -2614,6 +2633,7 @@ export default function Home() {
               onToggleDisabled={toggleAccountDisabled}
               onResetPassword={resetAccountPassword}
               onDelete={deleteAccount}
+              onPurgeTestAccounts={purgeTestAccounts}
             />
           ) : null}
 
@@ -3391,7 +3411,8 @@ function ReminderPicker({ value, onChange, className }: {
   );
 }
 
-/** 任务附图：读成 data URL；太大的先压到 1600px 以内，避免任务记录过大 */
+/** 附图（任务附图 + 聊天图片）：读成 data URL，过大的先压到 1600px 以内、再压到 700KB 以下，
+ *  避免任务记录和 Agent 请求体积失控。 */
 async function readAttachmentImage(file: File): Promise<string> {
   const dataUrl = await readAsDataUrl(file);
   if (!file.type.startsWith("image/") || file.type === "image/gif") return dataUrl;
@@ -3405,7 +3426,13 @@ async function readAttachmentImage(file: File): Promise<string> {
     const context = canvas.getContext("2d");
     if (!context) return dataUrl;
     context.drawImage(image, 0, 0, canvas.width, canvas.height);
-    return canvas.toDataURL("image/jpeg", 0.82);
+    // 压一次：截图字多，质量 0.85 能看清文字又小很多
+    let output = canvas.toDataURL("image/jpeg", 0.85);
+    for (const quality of [0.72, 0.6]) {
+      if (output.length <= 700_000) break;
+      output = canvas.toDataURL("image/jpeg", quality);
+    }
+    return output.length < dataUrl.length ? output : dataUrl;
   } catch {
     return dataUrl;
   }

@@ -1,5 +1,6 @@
 // 账号隔离测试（确定性版）：直接用任务中心表单创建任务，不依赖模型响应。
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 
@@ -93,6 +94,8 @@ try {
   await browser.close();
 }
 
+// 收尾：清掉测试注册的账号
+await cleanupTestAccounts();
 const failed = results.filter((r) => !r.ok);
 console.log(`\n${results.length - failed.length}/${results.length} 项通过`);
 process.exit(failed.length ? 1 : 0);

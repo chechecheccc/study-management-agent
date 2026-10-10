@@ -1,6 +1,7 @@
 // 验证「设置」页：数据管理并入设置、各分区齐全、动画开关真的生效
 import { createRequire } from "node:module";
 import { readFileSync } from "node:fs";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -108,6 +109,8 @@ try {
 } finally {
   await browser.close();
 }
+// 收尾：清掉测试注册的账号
+await cleanupTestAccounts();
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);

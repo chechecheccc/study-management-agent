@@ -4,6 +4,7 @@
 //   3) 已经自己传过同一份课件的账号（admin）不会被塞重复；
 //   4) 删掉预设课件后，重新登录不会又被补回来。
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -138,6 +139,8 @@ try {
 }
 
 clearTimeout(watchdog);
+// 收尾：清掉本次测试注册的账号，不让账号列表越测越长
+await cleanupTestAccounts();
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);

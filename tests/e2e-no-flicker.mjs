@@ -2,6 +2,7 @@
 // 以前整页入场动画依赖「确认卡 / 入库队列」，队列里一多文件、确认卡一出现，
 // 整个页面会重播一次淡入位移（就是用户看到的"跳一下"）。现在整页只在切页面时播。
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -74,6 +75,8 @@ try {
 } finally {
   await browser.close();
 }
+// 收尾：清掉本次测试注册的账号，不让账号列表越测越长
+await cleanupTestAccounts();
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);

@@ -9,7 +9,8 @@ import { describeModelFailure, readModelErrorDetail } from "../../../lib/model-e
 import { resolveModelTarget } from "../../../lib/llm-server";
 
 // Agent 对话与工具调用：DeepSeek V4.1 Flash（OpenAI 兼容接口）
-const MAX_REQUEST_BYTES = 1_000_000;
+// 上限与图片抽取链路保持一致：带图的多模态请求本身就可能几 MB，1MB 会误伤正常请求
+const MAX_REQUEST_BYTES = 14_500_000;
 const TIMEOUT_MS = 55_000;
 
 type ModelToolCall = {
@@ -39,7 +40,7 @@ export async function POST(request: Request) {
 
   const contentLength = Number(request.headers.get("content-length") ?? "0");
   if (contentLength > MAX_REQUEST_BYTES) {
-    return errorResponse("REQUEST_TOO_LARGE", "对话内容过大，请清空部分历史后重试。", 413);
+    return errorResponse("REQUEST_TOO_LARGE", "这次发送的内容太大（可能是图片太多或历史过长），请删或换小一点的图片，或新建一个对话后重试。", 413);
   }
 
   let rawBody: unknown;

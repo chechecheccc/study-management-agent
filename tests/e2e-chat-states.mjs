@@ -2,6 +2,7 @@
 //   1) 只发图片（没有文字）时，用户气泡不该借用"正在思考与行动"占位；答完后不该还留着转圈
 //   2) 请求确认的卡片：确认/取消按钮必须一直固定在卡片底部可见（不用滚到底）
 import { createRequire } from "node:module";
+import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
 const { chromium } = require("playwright");
 const CHROME = "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe";
@@ -106,6 +107,8 @@ try {
 } finally {
   await browser.close();
 }
+// 收尾：清掉本次测试注册的账号，不让账号列表越测越长
+await cleanupTestAccounts();
 const bad = results.filter((r) => !r.ok);
 console.log(`\n${results.length - bad.length}/${results.length} 项通过`);
 process.exit(bad.length ? 1 : 0);

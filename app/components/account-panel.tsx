@@ -10,10 +10,11 @@ type Props = {
   onToggleDisabled: (userId: string) => void;
   onResetPassword: (userId: string, password: string) => Promise<string | null>;
   onDelete: (userId: string) => void;
+  onPurgeTestAccounts: () => Promise<number | null>;
 };
 
-// 管理员面板：新增账号、停用/启用、重置密码、删除。
-export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabled, onResetPassword, onDelete }: Props) {
+// 管理员面板：新增账号、停用/启用、重置密码、删除、一键清理测试账号。
+export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabled, onResetPassword, onDelete, onPurgeTestAccounts }: Props) {
   const [username, setUsername] = useState("");
   const [displayName, setDisplayName] = useState("");
   const [password, setPassword] = useState("");
@@ -23,6 +24,9 @@ export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabl
   const [pendingDelete, setPendingDelete] = useState<string | null>(null);
   const [resetTarget, setResetTarget] = useState<string | null>(null);
   const [resetValue, setResetValue] = useState("");
+  const [showTests, setShowTests] = useState(false);
+  const [confirmPurge, setConfirmPurge] = useState(false);
+  const [purging, setPurging] = useState(false);
 
   const submit = async (event: React.FormEvent) => {
     event.preventDefault();
@@ -53,6 +57,57 @@ export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabl
     setResetValue("");
   };
 
+
+  const realAccounts = accounts.filter((account) => !account.test);
+  const testAccounts = accounts.filter((account) => account.test);
+
+  const purgeTests = async () => {
+    setError("");
+    setMessage("");
+    setPurging(true);
+    const removed = await onPurgeTestAccounts();
+    setPurging(false);
+    setConfirmPurge(false);
+    if (removed === null) {
+      setError("清理失败，请确认服务端可用后重试。");
+      return;
+    }
+    setMessage(removed > 0 ? "已清理 " + removed + " 个测试账号。" : "没有需要清理的测试账号。");
+  };
+
+  const renderRow = (account: PublicAccount) => (
+    <div className={"account-row " + (account.disabled ? "disabled" : "")} key={account.id}>
+      <span className={"role-badge " + account.role}>{account.role === "admin" ? "管理员" : "学生"}</span>
+      <div className="account-main">
+        <strong>{account.displayName}</strong>
+        <small>{account.username}{account.id === currentUserId ? " · 当前登录" : ""}{account.disabled ? " · 已停用" : ""}{account.test ? " · 测试账号" : ""}</small>
+      </div>
+      <div className="account-actions">
+        {resetTarget === account.id ? (
+          <>
+            <input value={resetValue} onChange={(event) => setResetValue(event.target.value)} placeholder="新密码" aria-label="重置密码" />
+            <button className="quiet-button" onClick={confirmReset}>确定</button>
+            <button className="text-button" onClick={() => { setResetTarget(null); setResetValue(""); }}>取消</button>
+          </>
+        ) : (
+          <>
+            <button className="quiet-button" onClick={() => { setResetTarget(account.id); setResetValue(""); }}>重置密码</button>
+            <button className="quiet-button" onClick={() => onToggleDisabled(account.id)} disabled={account.id === currentUserId}>
+              {account.disabled ? "启用" : "停用"}
+            </button>
+            {pendingDelete === account.id ? (
+              <>
+                <button className="quiet-button danger" onClick={() => { onDelete(account.id); setPendingDelete(null); }}>确认删除</button>
+                <button className="text-button" onClick={() => setPendingDelete(null)}>取消</button>
+              </>
+            ) : (
+              <button className="text-button" onClick={() => setPendingDelete(account.id)} disabled={account.id === currentUserId}>删除</button>
+            )}
+          </>
+        )}
+      </div>
+    </div>
+  );
   return (
     <div className="page-view">
       <div className="page-header">
@@ -83,47 +138,38 @@ export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabl
         </div>
 
         <div className="data-card">
-          <div className="card-kicker">ACCOUNTS · {accounts.length}</div>
-          <h3>账号列表</h3>
+          <div className="card-kicker">ACCOUNTS · {realAccounts.length}</div>
+          <h3>正式账号</h3>
           <div className="account-list">
-            {accounts.map((account) => (
-              <div className={`account-row ${account.disabled ? "disabled" : ""}`} key={account.id}>
-                <span className={`role-badge ${account.role}`}>{account.role === "admin" ? "管理员" : "学生"}</span>
-                <div className="account-main">
-                  <strong>{account.displayName}</strong>
-                  <small>{account.username}{account.id === currentUserId ? " · 当前登录" : ""}{account.disabled ? " · 已停用" : ""}</small>
-                </div>
-                <div className="account-actions">
-                  {resetTarget === account.id ? (
-                    <>
-                      <input value={resetValue} onChange={(event) => setResetValue(event.target.value)} placeholder="新密码" aria-label="重置密码" />
-                      <button className="quiet-button" onClick={confirmReset}>确定</button>
-                      <button className="text-button" onClick={() => { setResetTarget(null); setResetValue(""); }}>取消</button>
-                    </>
-                  ) : (
-                    <>
-                      <button className="quiet-button" onClick={() => { setResetTarget(account.id); setResetValue(""); }}>重置密码</button>
-                      <button className="quiet-button" onClick={() => onToggleDisabled(account.id)} disabled={account.id === currentUserId}>
-                        {account.disabled ? "启用" : "停用"}
-                      </button>
-                      {pendingDelete === account.id ? (
-                        <>
-                          <button className="quiet-button danger" onClick={() => { onDelete(account.id); setPendingDelete(null); }}>确认删除</button>
-                          <button className="text-button" onClick={() => setPendingDelete(null)}>取消</button>
-                        </>
-                      ) : (
-                        <button className="text-button" onClick={() => setPendingDelete(account.id)} disabled={account.id === currentUserId}>删除</button>
-                      )}
-                    </>
-                  )}
-                </div>
-              </div>
-            ))}
+            {realAccounts.map(renderRow)}
           </div>
-          <small className="auth-hint">停用后该账号无法登录，但数据仍保留在本机；删除账号会同时清除它的本地数据。</small>
+          <small className="auth-hint">停用后该账号无法登录，数据仍保留；删除账号会同时清除它在服务端数据库里的资料、任务与对话。</small>
         </div>
       </div>
+
+      {testAccounts.length ? (
+        <div className="data-card account-tests">
+          <div className="account-tests-head">
+            <div>
+              <div className="card-kicker">TEST ACCOUNTS · {testAccounts.length}</div>
+              <h3>测试账号</h3>
+              <p className="account-tests-note">这些是自动化测试每跑一次就注册的临时账号，平时用不到，可以整批清理。</p>
+            </div>
+            <div className="account-tests-actions">
+              <button className="quiet-button" onClick={() => setShowTests((value) => !value)}>{showTests ? "收起" : "展开查看"}</button>
+              {confirmPurge ? (
+                <>
+                  <button className="quiet-button danger" onClick={purgeTests} disabled={purging}>{purging ? "清理中…" : "确认清理 " + testAccounts.length + " 个"}</button>
+                  <button className="text-button" onClick={() => setConfirmPurge(false)} disabled={purging}>取消</button>
+                </>
+              ) : (
+                <button className="quiet-button danger" onClick={() => setConfirmPurge(true)}>一键清理测试账号</button>
+              )}
+            </div>
+          </div>
+          {showTests ? <div className="account-list">{testAccounts.map(renderRow)}</div> : null}
+        </div>
+      ) : null}
     </div>
   );
 }
-
