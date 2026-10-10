@@ -241,11 +241,11 @@ export const AGENT_TOOLS: ToolSpec[] = [
   {
     name: "navigate",
     label: "打开页面",
-    description: "帮用户切换到应用内的某个页面：assistant 智能体、resources 资料库、tasks 任务中心、review 复习计划、data 数据管理。",
+    description: "帮用户切换到应用内的某个页面：assistant 智能体、resources 资料库、tasks 任务中心、review 复习计划、settings 设置（数据、提醒、画像、账号都在这里）。",
     parameters: {
       type: "object",
       properties: {
-        view: { type: "string", enum: ["assistant", "resources", "tasks", "review", "data"] },
+        view: { type: "string", enum: ["assistant", "resources", "tasks", "review", "settings"] },
         keyword: { type: "string", description: "可选，跳转后在资料库中应用搜索关键词" },
       },
       required: ["view"],

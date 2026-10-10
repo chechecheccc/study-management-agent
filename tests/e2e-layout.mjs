@@ -55,7 +55,7 @@ for (const vp of [{ width: 1920, height: 1080 }, { width: 1440, height: 950 }, {
   let scroll = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);
   check("资料页无整页滚动", scroll <= 0, `滚动余量=${scroll}px`);
 
-  for (const view of ["任务中心", "复习计划", "数据管理", "账号管理"]) {
+  for (const view of ["任务中心", "复习计划", "设置", "账号管理"]) {
     await page.locator(".nav-item", { hasText: view }).click();
     await page.waitForTimeout(900);
     scroll = await page.evaluate(() => document.documentElement.scrollHeight - innerHeight);

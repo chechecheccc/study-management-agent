@@ -58,6 +58,8 @@ import { StudyIntro } from "./components/study-intro";
 import { LoginScreen } from "./components/login-screen";
 import { AccountPanel } from "./components/account-panel";
 import { applyPresets, isPresetCourseId, isPresetResourceId } from "./lib/presets";
+import { loadPreferences, savePreferences } from "./lib/preferences";
+import type { Preferences } from "./lib/preferences";
 import { fitSessionsToAvailability, parseAvailability } from "./lib/availability";
 import { formatPlanDate, formatSessionDetail, hasSessionDetail, planSummary, sanitizePlanSessions } from "./lib/review-plan";
 import type { PlanSession } from "./lib/review-plan";
@@ -86,7 +88,7 @@ import { buildProactiveFallback, buildProactiveGoal, computeProactiveSignals } f
 
 gsap.registerPlugin(useGSAP);
 
-type View = "assistant" | "resources" | "tasks" | "review" | "data" | "accounts";
+type View = "assistant" | "resources" | "tasks" | "review" | "settings" | "accounts";
 
 type ToolStep = {
   id: string;
@@ -146,7 +148,7 @@ const viewLabels: Record<View, string> = {
   resources: "资料库",
   tasks: "任务中心",
   review: "复习计划",
-  data: "数据管理",
+  settings: "设置",
   accounts: "账号管理",
 };
 
@@ -171,6 +173,9 @@ export default function Home() {
   const appRef = useRef<HTMLElement>(null);
   const [view, setView] = useState<View>("assistant");
   const [showIntro, setShowIntro] = useState(true);
+  // 界面偏好（本机设置）：动画开关
+  const [preferences, setPreferences] = useState<Preferences>({ animations: true });
+  const [preferencesReady, setPreferencesReady] = useState(false);
   const [snapshot, setSnapshot] = useState<AppSnapshot>(emptySnapshot());
   const [ready, setReady] = useState(false);
   const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
@@ -264,6 +269,7 @@ export default function Home() {
   const profileRef = useRef(profile);
 
   useGSAP(() => {
+    if (!preferences.animations) return;
     const intro = gsap.timeline({ defaults: { ease: "power3.out" } });
     const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
     const compact = window.matchMedia("(max-width: 720px)").matches;
@@ -282,9 +288,10 @@ export default function Home() {
     return () => {
       intro.kill();
     };
-  }, { scope: appRef });
+  }, { scope: appRef, dependencies: [preferences.animations] });
 
   useGSAP((_, contextSafe) => {
+    if (!preferences.animations) return;
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const buttons = gsap.utils.toArray<HTMLElement>("button", appRef.current);
     const cleanups: Array<() => void> = [];
@@ -301,7 +308,7 @@ export default function Home() {
       });
     });
     return () => cleanups.forEach((cleanup) => cleanup());
-  }, { scope: appRef });
+  }, { scope: appRef, dependencies: [preferences.animations] });
 
   // 只在"切换页面"时播一次整页入场。
   // 以前这里依赖了确认卡和入库队列，于是生成复习计划 / 收到确认卡时整页会重播一次，
@@ -635,6 +642,29 @@ export default function Home() {
     importAbortControllersRef.current.forEach((controller) => controller.abort());
   }, []);
 
+  // 读取本机偏好：关掉动画时连片头都不渲染（放在微任务里，避免 SSR 与首屏不一致）
+  useEffect(() => {
+    let cancelled = false;
+    void Promise.resolve().then(() => {
+      if (cancelled) return;
+      const stored = loadPreferences();
+      setPreferences(stored);
+      setPreferencesReady(true);
+      if (!stored.animations) setShowIntro(false);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const toggleAnimations = (next: boolean) => {
+    const updated = { ...preferences, animations: next };
+    setPreferences(updated);
+    savePreferences(updated);
+    if (!next) setShowIntro(false);
+    addAssistantMessage(next ? "界面动画已开启。" : "界面动画已关闭：片头和过渡都不会再出现。");
+  };
+
   useEffect(() => {
     if (ready && currentUser) {
       const stamped = touchSnapshot(syncedSnapshotRef.current, snapshot);
@@ -879,9 +909,11 @@ export default function Home() {
         return { ok: true, summary: `找到 ${data.length} 份资料`, data };
       }
       case "navigate": {
-        const target = asString(args.view);
-        if (!["assistant", "resources", "tasks", "review", "data"].includes(target)) {
-          return { ok: false, summary: `未知页面：${target}` };
+        const requested = asString(args.view);
+        // 旧的 data 参数映射到现在的「设置」页
+        const target = requested === "data" ? "settings" : requested;
+        if (!["assistant", "resources", "tasks", "review", "settings"].includes(target)) {
+          return { ok: false, summary: `未知页面：${requested}` };
         }
         const keyword = asString(args.keyword).trim();
         if (keyword) setSearch(keyword);
@@ -2396,7 +2428,7 @@ export default function Home() {
               aria-label="搜索资料、任务或课程"
             />
           </label>
-          <button className="icon-button" title="本地数据管理" onClick={() => setView("data")}>⚙</button>
+          <button className="icon-button" title="设置" aria-label="设置" onClick={() => setView("settings")}>⚙</button>
         </header>
 
         <div className="content-wrap view-surface" data-view={view}>
@@ -2527,6 +2559,7 @@ export default function Home() {
               onApprovePlan={approvePlanConfirm}
               onRejectPlan={rejectConfirm}
               onOpenAssistant={() => setView("assistant")}
+              onCreateCourse={createCourse}
             />
           ) : null}
 
@@ -2541,8 +2574,8 @@ export default function Home() {
             />
           ) : null}
 
-          {view === "data" ? (
-            <DataView
+          {view === "settings" ? (
+            <SettingsView
               snapshot={snapshot}
               profile={profile}
               syncState={syncState}
@@ -2558,6 +2591,10 @@ export default function Home() {
               onImport={() => importInputRef.current?.click()}
               onFile={importBackup}
               onReset={resetDemo}
+              preferences={preferences}
+              currentUser={currentUser}
+              onToggleAnimations={toggleAnimations}
+              onLogout={logout}
               inputRef={importInputRef}
             />
           ) : null}
@@ -2594,7 +2631,7 @@ export default function Home() {
         </div>
       </div>
     ) : null}
-    {showIntro ? <StudyIntro onComplete={() => setShowIntro(false)} /> : null}
+    {preferencesReady && preferences.animations && showIntro ? <StudyIntro onComplete={() => setShowIntro(false)} /> : null}
     </>
   );
 }
@@ -3730,9 +3767,10 @@ function TasksView({
 }
 
 function ReviewView({
-  courses, running, plan, status, confirmError, onGenerate, onApprovePlan, onRejectPlan, onOpenAssistant,
+  courses, running, plan, status, confirmError, onGenerate, onApprovePlan, onRejectPlan, onOpenAssistant, onCreateCourse,
 }: {
   courses: Course[];
+  onCreateCourse: (name: string) => string | null;
   running: boolean;
   plan: PlanConfirmState | null;
   status: ReviewPlanStatus;
@@ -3765,9 +3803,13 @@ function ReviewView({
         <div className="review-form-card">
           <div className="card-kicker">STEP 01 · 先说你的时间</div>
           <h2>为哪门课准备？</h2>
-          <select value={selectedCourseId} onChange={(event) => setCourseId(event.target.value)} aria-label="复习计划课程">
-            {courses.map((item) => <option key={item.id} value={item.id}>{item.name}</option>)}
-          </select>
+          <CoursePicker
+            value={selectedCourseId}
+            onChange={setCourseId}
+            courses={courses}
+            onCreateCourse={onCreateCourse}
+            ariaLabel="复习计划课程"
+          />
           <label>考试或复习截止时间<input type="datetime-local" value={examAt} onChange={(event) => setExamAt(event.target.value)} /></label>
           <label>你什么时候方便学习？<input value={availability} onChange={(event) => setAvailability(event.target.value)} placeholder="例如：周一到周五晚上" /></label>
           <div className="availability-chips">
@@ -3896,106 +3938,174 @@ function PlanItem({ date, title, duration, note, focus, route, checkpoint }: {
   );
 }
 
-function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, notificationPermission, onSyncNow, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; syncState: "idle" | "syncing" | "error" | "offline"; syncMessage: string; lastSyncedAt: string | null; conversationCount: number; notificationPermission: NotificationPermission | "unsupported"; onSyncNow: () => void; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
+function SettingsView({
+  snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, notificationPermission,
+  preferences, currentUser, onToggleAnimations, onSyncNow, onSaveProfile, onExport, onExportICal,
+  onEnableNotifications, onImport, onFile, onReset, onLogout, inputRef,
+}: {
+  snapshot: AppSnapshot;
+  profile: UserProfile;
+  syncState: "idle" | "syncing" | "error" | "offline";
+  syncMessage: string;
+  lastSyncedAt: string | null;
+  conversationCount: number;
+  notificationPermission: NotificationPermission | "unsupported";
+  preferences: Preferences;
+  currentUser: SessionUser;
+  onToggleAnimations: (next: boolean) => void;
+  onSyncNow: () => void;
+  onSaveProfile: (profile: UserProfile) => void;
+  onExport: () => void;
+  onExportICal: () => void;
+  onEnableNotifications: () => void | Promise<void>;
+  onImport: () => void;
+  onFile: (file?: File) => void;
+  onReset: () => void;
+  onLogout: () => void;
+  inputRef: React.RefObject<HTMLInputElement | null>;
+}) {
   const [draft, setDraft] = useState<UserProfile>(profile);
   const [confirmReset, setConfirmReset] = useState(false);
   const notificationLabel =
     notificationPermission === "granted" ? "桌面提醒已开启"
-      : notificationPermission === "denied" ? "桌面提醒被浏览器拦截了"
-        : notificationPermission === "unsupported" ? "此浏览器不支持桌面提醒"
+      : notificationPermission === "denied" ? "被浏览器拦截"
+        : notificationPermission === "unsupported" ? "浏览器不支持"
           : "开启桌面提醒";
-  // 本机资料里记录的文件大小合计
+  const syncTitle =
+    syncState === "syncing" ? "正在同步…"
+      : syncState === "error" ? "同步失败"
+        : syncState === "offline" ? "离线模式"
+          : lastSyncedAt ? "已同步" : "等待首次同步";
+  const syncDetail =
+    syncState === "error" || syncState === "offline"
+      ? (syncMessage || "联网后会自动重试")
+      : lastSyncedAt
+        ? `上次同步：${formatDate(lastSyncedAt)}`
+        : "有任何改动都会自动同步到云端";
   const totalFileBytes = snapshot.resources.reduce((sum, resource) => sum + (resource.fileSize ?? 0), 0);
-  const fileSizeLabel = totalFileBytes > 0 ? formatBytes(totalFileBytes) : "—";
+
   return (
-    <div className="page-view">
-      <PageHeader eyebrow="DATA" title="数据管理" description="在这里备份、恢复与整理你的学习空间。" />
-      <div className="data-grid">
-        <div className="data-card primary-data">
-          <div className="card-kicker">BACKUP</div>
-          <h2>这是你的个人学习空间</h2>
-          <p>
-            备份文件包含<b>课程、资料、任务、对话与画像</b>，可在浏览器或设备之间迁移。
-            原始文件（PDF / 图片本体）不在备份里——它们保存在服务端与本机，可在资料库中单独打开或下载。
+    <div className="page-view settings-view">
+      <PageHeader eyebrow="SETTINGS" title="设置" description="外观、提醒、数据与账号，都收在这里。" />
+      <div className="settings-grid">
+        <section className="settings-card">
+          <div className="card-kicker">APPEARANCE</div>
+          <h3>外观与动画</h3>
+          <div className="settings-row">
+            <div className="settings-row-main">
+              <strong>界面动画</strong>
+              <small>打开软件时的片头动画、页面切换与卡片入场。关掉后界面直接出现，不再有过渡动画。</small>
+            </div>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={preferences.animations}
+              aria-label="界面动画"
+              className={`switch ${preferences.animations ? "on" : ""}`}
+              onClick={() => onToggleAnimations(!preferences.animations)}
+            >
+              <span className="switch-knob" />
+            </button>
+          </div>
+          <p className="settings-hint">
+            当前：<b>{preferences.animations ? "动画已开启" : "动画已关闭"}</b>
+            {preferences.animations ? " · 片头动画与页面过渡都会播放" : " · 片头与过渡都不会再出现"}
           </p>
-          <div className="data-stats">
+        </section>
+
+        <section className="settings-card">
+          <div className="card-kicker">REMINDERS</div>
+          <h3>提醒与日历</h3>
+          <div className="settings-row">
+            <div className="settings-row-main">
+              <strong>桌面提醒</strong>
+              <small>任务临近截止时弹系统通知。需要浏览器授权，且只在浅浅页面开着的时候生效。</small>
+            </div>
+            <button className="quiet-button" onClick={onEnableNotifications}>{notificationLabel}</button>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-main">
+              <strong>导出日历 (.ics)</strong>
+              <small>把每条任务连同它的提醒规则写进日历（含提前 3 天 / 1 天 / 2 小时等闹钟）。导入手机或电脑日历后，关掉网页也会照常提醒。</small>
+            </div>
+            <button className="quiet-button" onClick={onExportICal}>导出日历</button>
+          </div>
+        </section>
+
+        <section className="settings-card">
+          <div className="card-kicker">DATA</div>
+          <h3>数据与同步</h3>
+          <div className="settings-row">
+            <div className="sync-status">
+              <span className={`sync-dot ${syncState}`} />
+              <div>
+                <strong>云同步 · {syncTitle}</strong>
+                <small>{syncDetail}</small>
+              </div>
+            </div>
+            <button className="quiet-button" onClick={onSyncNow} disabled={syncState === "syncing"}>
+              {syncState === "syncing" ? "同步中…" : "立即同步"}
+            </button>
+          </div>
+          <div className="settings-row">
+            <div className="settings-row-main">
+              <strong>本地备份</strong>
+              <small>备份包含课程、资料、任务、对话与画像；原始文件（PDF / 图片本体）不在这里，可在资料库单独打开或下载。</small>
+            </div>
+            <span className="settings-row-actions">
+              <button className="quiet-button" onClick={onExport}>下载备份</button>
+              <button className="quiet-button" onClick={onImport}>恢复备份</button>
+            </span>
+          </div>
+          <div className="settings-stats">
             <div><strong>{snapshot.courses.length}</strong><span>门课程</span></div>
             <div><strong>{snapshot.resources.length}</strong><span>份资料</span></div>
             <div><strong>{snapshot.tasks.length}</strong><span>条任务</span></div>
             <div><strong>{conversationCount}</strong><span>个对话</span></div>
           </div>
-          <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><button className="quiet-button" onClick={onExportICal}>导出日历 (.ics)</button><button className="quiet-button" onClick={onEnableNotifications}>{notificationLabel}</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
-          <p className="data-note">
-            提醒怎么生效：<b>桌面提醒</b>只在浅浅这个页面开着的时候弹（浏览器通知权限）；
-            <b>导出日历</b>会把每条任务连同它的提醒规则写进 .ics（含提前 3 天/1 天/2 小时等闹钟），
-            导入手机或电脑日历后，<b>关掉网页也会照常提醒</b>。
-          </p>
-        </div>
-        <div className="data-card">
-          <div className="card-kicker">CLOUD SYNC</div>
-          <h3>云同步 · 换设备可用</h3>
-          <p>课程、资料、任务、对话与原文件都会备份到服务器，在其它设备用同一账号登录即可看到、并直接打开原文件。</p>
-          <div className="sync-status">
-            <span className={`sync-dot ${syncState}`} />
-            <div>
-              <strong>
-                {syncState === "syncing" ? "正在同步…"
-                  : syncState === "error" ? "同步失败"
-                    : syncState === "offline" ? "离线模式"
-                      : lastSyncedAt ? "已同步" : "等待首次同步"}
-              </strong>
+          <div className="settings-row danger">
+            <div className="settings-row-main">
+              <strong>恢复示例数据</strong>
               <small>
-                {syncState === "error" || syncState === "offline"
-                  ? (syncMessage || "联网后会自动重试")
-                  : lastSyncedAt
-                    ? `上次同步：${formatDate(lastSyncedAt)}`
-                    : "有任何改动都会自动同步"}
+                会把示例课程、资料与任务加回你的空间并同步到服务端，你自己的资料不会被删除。
+                本机存储：{snapshot.resources.length} 份资料 · 原文件 {totalFileBytes > 0 ? formatBytes(totalFileBytes) : "—"} · {profile.notes.length} 条记忆笔记。
               </small>
             </div>
-          </div>
-          <div className="data-actions">
-            <button className="primary-button" onClick={onSyncNow} disabled={syncState === "syncing"}>
-              {syncState === "syncing" ? "同步中…" : "立即同步"}
-            </button>
-          </div>
-        </div>
-        <div className="data-card">
-          <div className="card-kicker">AGENT MEMORY</div>
-          <h3>我的画像 · 长期记忆</h3>
-          <p>浅浅每一轮思考、制定计划时都会参考这些信息。也可以在对话中直接告诉它，它会自己记住。</p>
-          <div className="form-grid profile-form">
-            <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="怎么称呼你" />
-            <input value={draft.studyTime} onChange={(event) => setDraft({ ...draft, studyTime: event.target.value })} placeholder="方便学习的时间，如：工作日晚上" />
-            <input value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="本学期目标，如：数据库期末 90 分" />
-          </div>
-          <div className="data-actions"><button className="primary-button" onClick={() => onSaveProfile(draft)}>保存画像</button></div>
-        </div>
-        <div className="data-card">
-          <div className="card-kicker">STORAGE</div>
-          <h3>本机存储与重置</h3>
-          <p>这些数字来自当前浏览器。原文件已备份到服务端，即使清空浏览器也能重新取回。</p>
-          <div className="data-stats">
-            <div><strong>{snapshot.resources.length}</strong><span>份资料</span></div>
-            <div><strong>{fileSizeLabel}</strong><span>原文件总计</span></div>
-            <div><strong>{conversationCount}</strong><span>个对话</span></div>
-            <div><strong>{profile.notes.length}</strong><span>条记忆笔记</span></div>
-          </div>
-          <div className="data-actions danger-zone">
             {confirmReset ? (
-              <>
-                <button className="quiet-button danger" onClick={() => { onReset(); setConfirmReset(false); }}>确认恢复示例数据</button>
+              <span className="settings-row-actions">
+                <button className="quiet-button danger" onClick={() => { onReset(); setConfirmReset(false); }}>确认恢复</button>
                 <button className="text-button" onClick={() => setConfirmReset(false)}>取消</button>
-              </>
+              </span>
             ) : (
-              <button className="text-button" onClick={() => setConfirmReset(true)}>恢复示例数据…</button>
+              <button className="text-button" onClick={() => setConfirmReset(true)}>恢复…</button>
             )}
           </div>
-          {confirmReset ? (
-            <small className="auth-hint">
-              会把 3 门示例课程、4 份示例资料与 3 条示例任务加回你的空间，并同步到服务端。你自己的资料不会被删除。
-            </small>
-          ) : null}
-        </div>
+          <input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} />
+        </section>
+
+        <section className="settings-card">
+          <div className="card-kicker">PROFILE</div>
+          <h3>学习画像</h3>
+          <p>浅浅每一轮思考、制定计划时都会参考这些信息；也可以在对话里直接告诉它，它会自己记住。</p>
+          <div className="form-grid profile-form">
+            <input value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="怎么称呼你" aria-label="称呼" />
+            <input value={draft.studyTime} onChange={(event) => setDraft({ ...draft, studyTime: event.target.value })} placeholder="方便学习的时间，如：工作日晚上" aria-label="方便学习的时间" />
+            <input value={draft.goal} onChange={(event) => setDraft({ ...draft, goal: event.target.value })} placeholder="本学期目标，如：数据库期末 90 分" aria-label="本学期目标" />
+          </div>
+          <div className="data-actions"><button className="primary-button" onClick={() => onSaveProfile(draft)}>保存画像</button></div>
+        </section>
+
+        <section className="settings-card">
+          <div className="card-kicker">ACCOUNT</div>
+          <h3>账号</h3>
+          <div className="settings-row">
+            <div className="settings-row-main">
+              <strong>{currentUser.displayName}</strong>
+              <small>@{currentUser.username} · {currentUser.role === "admin" ? "管理员" : "学生"} · 数据按账号隔离，换设备登录同一账号即可继续</small>
+            </div>
+            <button className="quiet-button" onClick={onLogout}>登出</button>
+          </div>
+        </section>
       </div>
     </div>
   );

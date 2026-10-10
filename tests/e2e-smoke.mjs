@@ -172,12 +172,12 @@ try {
   const planSaved = await page.locator(".plan-preview-card").textContent().catch(() => "");
   check("复习计划可确认写入", (planSaved ?? "").includes("已保存") || (planSaved ?? "").includes("复习节奏"), `预览区：${(planSaved ?? "").slice(0, 60)}`);
 
-  // 7. 数据管理：画像保存 + 按钮存在
-  await page.locator(".nav-item", { hasText: "数据管理" }).click();
+  // 7. 设置：画像保存 + 按钮存在
+  await page.locator(".nav-item", { hasText: "设置" }).click();
   await page.waitForTimeout(800);
   const hasIcal = await page.getByRole("button", { name: /导出日历/ }).isVisible().catch(() => false);
   const hasNotify = await page.getByRole("button", { name: /开启桌面提醒/ }).isVisible().catch(() => false);
-  check("数据管理有 iCal 与通知入口", hasIcal && hasNotify, `ical=${hasIcal}, notify=${hasNotify}`);
+  check("设置有日历导出与桌面提醒入口", hasIcal && hasNotify, `ical=${hasIcal}, notify=${hasNotify}`);
   const nameInput = page.locator('.profile-form input').first();
   await nameInput.fill("测试同学");
   await page.getByRole("button", { name: /保存画像/ }).click();
@@ -193,7 +193,7 @@ try {
     await page.waitForTimeout(1200);
   }
   await dismissIntro();
-  await page.locator(".nav-item", { hasText: "数据管理" }).click();
+  await page.locator(".nav-item", { hasText: "设置" }).click();
   await page.waitForTimeout(1200);
   const persisted = await page.locator(".profile-form input").first().inputValue();
   check("画像刷新后仍保留", persisted === "测试同学", `读取到：${persisted}`);

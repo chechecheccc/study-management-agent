@@ -52,7 +52,7 @@ test("the product enforces the agreed Sprint 1 boundaries", async () => {
   ]);
 
   assert.match(page, /确认并保存/);
-  assert.match(page, /下载本地备份/);
+  assert.match(page, /下载备份/);
   assert.match(page, /恢复备份/);
   assert.match(css, /@media \(max-width: 720px\)/);
   assert.match(prototype, /单文件 100MB/);

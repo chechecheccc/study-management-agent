@@ -166,7 +166,24 @@ try {
   await page.waitForTimeout(1500);
   check("可以恢复成未开始", ((await page.locator(".page-view").textContent()) ?? "").includes(taskTitle));
 
-  // 收尾：删掉这条测试任务，别留在账号里
+  // 8) 复习计划的课程下拉第一项也应该是「＋ 新建课程」
+  await page.locator(".nav-item", { hasText: "复习计划" }).click();
+  await page.waitForTimeout(1500);
+  const reviewCourseSelect = page.locator('select[aria-label="复习计划课程"]').first();
+  const reviewFirstOption = (await reviewCourseSelect.locator("option").first().textContent()) ?? "";
+  check("复习计划课程下拉第一项是「＋ 新建课程」", reviewFirstOption.includes("新建课程"), reviewFirstOption.trim());
+  await reviewCourseSelect.selectOption({ label: "＋ 新建课程" });
+  await page.waitForTimeout(500);
+  const reviewNewCourseInput = page.locator('input[aria-label="新课程名称"]');
+  check("复习计划里也能就地新建课程", await reviewNewCourseInput.isVisible().catch(() => false));
+  await reviewNewCourseInput.fill(`复习建课${RUN}`);
+  await page.locator(".course-picker-new").getByRole("button", { name: "保存" }).click();
+  await page.waitForTimeout(900);
+  check("新课程进入我的课程", ((await page.locator(".sidebar-section").textContent()) ?? "").includes(`复习建课${RUN}`));
+
+  // 收尾：删掉这条测试任务，别留在账号里（先回到任务中心）
+  await page.locator(".nav-item", { hasText: "任务中心" }).click();
+  await page.waitForTimeout(1500);
   const cleanupRow = page.locator(".task-row", { hasText: taskTitle }).first();
   await cleanupRow.getByRole("button", { name: "删除", exact: true }).click();
   await page.waitForTimeout(500);

@@ -66,10 +66,10 @@ check("设备1 创建任务成功", tasks1.includes("云同步验证任务XYZ"),
 
 // 等自动同步（防抖 4 秒）
 await p1.waitForTimeout(8000);
-await p1.locator(".nav-item", { hasText: "数据管理" }).click();
+await p1.locator(".nav-item", { hasText: "设置" }).click();
 await p1.waitForTimeout(1200);
 const syncText = (await p1.locator(".sync-status").textContent()) ?? "";
-check("数据管理页显示已同步", syncText.includes("已同步"), `状态：${syncText.replace(/\s+/g, " ").slice(0, 50)}`);
+check("设置页显示已同步", syncText.includes("已同步"), `状态：${syncText.replace(/\s+/g, " ").slice(0, 50)}`);
 await p1.screenshot({ path: new URL("../.e2e/sync-device1.png", import.meta.url).pathname.slice(1) });
 
 // ---------- 设备 2：全新浏览器上下文（相当于另一台电脑） ----------
