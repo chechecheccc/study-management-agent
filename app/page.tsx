@@ -2843,8 +2843,12 @@ function AssistantView({
                     </div>
                   ) : null}
                   <div className="message-bubble">
-                    {message.text ? message.text : (
+                    {message.text ? (
+                      message.text
+                    ) : message.role === "assistant" ? (
                       <span className="thinking-placeholder"><span className="progress-spinner" />正在思考与行动…</span>
+                    ) : (
+                      <span className="image-only-hint">［图片］</span>
                     )}
                   </div>
                   {message.steps?.length ? (
@@ -4099,8 +4103,8 @@ function SettingsView({
               <strong>{llmConfig ? "正在使用你自己的模型" : "正在使用内置默认模型"}</strong>
               <small>
                 {llmConfig
-                  ? `${llmConfig.baseUrl} · 对话 ${llmConfig.agentModel} · 视觉 ${llmConfig.visionModel} · Key ${maskApiKey(llmConfig.apiKey)}`
-                  : `当前：${defaultModelLabel} · 接口与密钥由服务端保管`}
+                  ? `${llmConfig.baseUrl} · 聊天/工具 ${llmConfig.agentModel} · 图片识别 ${llmConfig.visionModel} · Key ${maskApiKey(llmConfig.apiKey)}`
+                  : `当前：${defaultModelLabel} 同时负责聊天与图片识别 · 接口与密钥由服务端保管`}
               </small>
             </div>
             <span className="settings-row-actions">
@@ -4124,11 +4128,27 @@ function SettingsView({
               ) : null}
             </span>
           </div>
+          <p className="llm-scope">
+            接口地址和 API Key 是<b>两边共用</b>的；下面两个模型各管一件事：
+            <b>对话模型</b>负责聊天、工具调用和排计划，<b>视觉模型</b>负责看图片 / 截图 / 文件识别。
+          </p>
           <div className="form-grid llm-form">
-            <input value={llmDraft.baseUrl} onChange={(event) => setLlmDraft({ ...llmDraft, baseUrl: event.target.value })} placeholder="接口地址，如 https://api.deepseek.com 或 https://api.openai.com/v1" aria-label="模型接口地址" />
-            <input value={llmDraft.apiKey} type="password" onChange={(event) => setLlmDraft({ ...llmDraft, apiKey: event.target.value })} placeholder="API Key（只保存在本机浏览器，不上传服务器）" aria-label="模型 API Key" />
-            <input value={llmDraft.agentModel} onChange={(event) => setLlmDraft({ ...llmDraft, agentModel: event.target.value })} placeholder="对话模型，如 deepseek-v4-flash / gpt-4o-mini" aria-label="对话模型" />
-            <input value={llmDraft.visionModel} onChange={(event) => setLlmDraft({ ...llmDraft, visionModel: event.target.value })} placeholder="视觉模型，如 deepseek-v4-flash / gpt-4o" aria-label="视觉模型" />
+            <label className="llm-field">
+              <span>接口地址（共用）</span>
+              <input value={llmDraft.baseUrl} onChange={(event) => setLlmDraft({ ...llmDraft, baseUrl: event.target.value })} placeholder="https://api.deepseek.com 或 https://api.openai.com/v1" aria-label="模型接口地址" />
+            </label>
+            <label className="llm-field">
+              <span>API Key（共用，只存本机）</span>
+              <input value={llmDraft.apiKey} type="password" onChange={(event) => setLlmDraft({ ...llmDraft, apiKey: event.target.value })} placeholder="sk-…" aria-label="模型 API Key" />
+            </label>
+            <label className="llm-field">
+              <span>对话模型（聊天 + 工具调用）</span>
+              <input value={llmDraft.agentModel} onChange={(event) => setLlmDraft({ ...llmDraft, agentModel: event.target.value })} placeholder="deepseek-v4-flash / gpt-4o-mini" aria-label="对话模型" />
+            </label>
+            <label className="llm-field">
+              <span>视觉模型（图片 / 文件识别）</span>
+              <input value={llmDraft.visionModel} onChange={(event) => setLlmDraft({ ...llmDraft, visionModel: event.target.value })} placeholder="deepseek-v4-flash / gpt-4o" aria-label="视觉模型" />
+            </label>
           </div>
           <div className="data-actions">
             <button

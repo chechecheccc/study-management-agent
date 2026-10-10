@@ -119,9 +119,10 @@ try {
 
   // 1) 现在同时有未逾期和已逾期，检查分组顺序
   const labels = await groupLabels();
-  const tomorrowIndex = labels.indexOf("明天");
   const overdueIndex = labels.indexOf("已逾期");
-  check("未逾期分组排在已逾期之前", tomorrowIndex >= 0 && overdueIndex >= 0 && tomorrowIndex < overdueIndex, labels.join(" / "));
+  // 未逾期分组必须都排在已逾期之前（不依赖今天是周几/几点）
+  const firstNonOverdue = labels.findIndex((l) => l !== "已逾期" && l !== "已完成");
+  check("未逾期分组排在已逾期之前", overdueIndex >= 0 && firstNonOverdue >= 0 && firstNonOverdue < overdueIndex, labels.join(" / "));
   check("已逾期分组带分隔样式", (await page.locator(".task-group.overdue-sep").count()) >= 1, labels.join(" / "));
 
   // 6) 编辑态左侧可以看附图

@@ -6,6 +6,7 @@
   --paper: #f5f3ed;
   --surface: #fffdf8;
   --line: #e5e5dd;
+  --card: #fffdf8;
   --coral: #f27662;
   --coral-dark: #d9574c;
   --blue: #6e86b9;
@@ -318,7 +319,10 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .availability-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 19px; }
 .wide { width: 100%; }
 .form-help { display: block; color: #9a9e95; line-height: 1.5; margin-top: 13px; }
-.plan-preview-card { min-height: 450px; }
+.plan-preview-card { min-height: 450px; display: flex; flex-direction: column; max-height: calc(100dvh - 330px); overflow: hidden; }
+.plan-preview-card > .empty-plan { flex: 1; }
+.plan-preview-card .plan-session-list { overflow-y: auto; min-height: 0; flex: 1 1 auto; overscroll-behavior: contain; }
+.plan-preview-card .plan-actions { position: sticky; bottom: 0; margin-top: 12px; padding-top: 14px; background: var(--card); border-top: 1px solid var(--line); }
 .plan-head { display: flex; justify-content: space-between; gap: 15px; border-bottom: 1px solid var(--line); padding-bottom: 15px; }
 .plan-head h2 { margin-bottom: 0; }
 .plan-item { display: flex; align-items: center; gap: 14px; padding: 17px 0; border-bottom: 1px solid #eff0eb; }
@@ -445,11 +449,19 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 
 /* ---------- 全局确认浮层：无论用户在哪个页面都能确认写入，避免循环挂起 ---------- */
 /* 兜底浮层：不遮挡页面交互，只在右下角提示"智能体在等你确认"，用户可去智能体页处理 */
-.confirm-overlay.rescue-overlay { position: fixed; right: 22px; bottom: 22px; z-index: 90; width: min(420px, calc(100vw - 44px)); max-height: 70vh; overflow-y: auto; background: transparent; }
+.confirm-overlay.rescue-overlay { position: fixed; right: 22px; bottom: 22px; z-index: 90; width: min(440px, calc(100vw - 44px)); max-height: none; overflow: visible; background: transparent; }
 .confirm-overlay.rescue-overlay .confirm-sheet { width: 100%; box-shadow: 0 20px 60px rgba(40, 50, 42, .22); }
 .inline-confirm { margin: 12px 20px 16px 35px; }
-.confirm-sheet { margin: 0; width: min(560px, 100%); max-height: 88vh; overflow-y: auto; box-shadow: var(--shadow); }
-.confirm-sheet .action-card { margin: 0; }
+/* 确认卡片：只有内容区滚动，确认/取消固定在卡片底部，不用滚到底才看得到 */
+.confirm-sheet { margin: 0; width: min(560px, 100%); max-height: min(82vh, 680px); display: flex; flex-direction: column; overflow: hidden; box-shadow: var(--shadow); }
+.confirm-sheet .action-card { margin: 0; display: flex; flex-direction: column; min-height: 0; }
+.confirm-sheet .plan-session-list { overflow-y: auto; min-height: 0; flex: 1 1 auto; overscroll-behavior: contain; }
+/* 不管卡片出现在兜底浮层还是聊天流里，都保证：内容区滚动、确认/取消固定在底部 */
+.action-card .plan-session-list { max-height: min(46vh, 380px); overflow-y: auto; overscroll-behavior: contain; }
+.action-card .action-buttons { position: sticky; bottom: 0; margin-top: 12px; padding: 12px 0 2px; background: #fff9f6; border-top: 1px solid #f0e4de; }
+.confirm-sheet .plan-session-list .plan-item { padding: 10px 2px; }
+.confirm-sheet .action-buttons { position: sticky; bottom: 0; margin-top: 12px; padding: 12px 0 2px; background: #fff9f6; border-top: 1px solid #f0e4de; }
+.confirm-sheet .confirm-hint { flex: none; }
 .confirm-hint { display: block; margin-top: 10px; color: var(--muted); font-size: 10px; }
 @media (prefers-reduced-motion: reduce) {
   .confirm-overlay { backdrop-filter: none; }
@@ -606,6 +618,11 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .settings-stats strong { font-size: 17px; letter-spacing: -.02em; }
 .settings-stats span { color: var(--muted); font-size: 10px; }
 .llm-form { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+.llm-field { display: grid; gap: 5px; }
+.llm-field > span { color: var(--muted); font-size: 10px; }
+.llm-scope { margin: 0; color: var(--muted); font-size: 10.5px; line-height: 1.7; }
+.llm-scope b { color: var(--ink); }
+.image-only-hint { color: #8b978c; font-size: 11px; }
 .llm-form input { font-size: 11px; }
 .settings-card code { background: #f2f0e6; border-radius: 5px; padding: 1px 5px; font-size: 10px; }
 @media (max-width: 720px) { .llm-form { grid-template-columns: 1fr; } }

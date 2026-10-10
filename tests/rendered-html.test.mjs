@@ -67,8 +67,15 @@ test("Sprint 2 model proxy keeps credentials server-side", async () => {
     read(".env.example"),
   ]);
 
-  assert.match(route, /process\.env\.DEEPSEEK_API_KEY/);
-  assert.match(route, /deepseek-v4-flash/);
+  // 默认密钥只在服务端（llm-server）读取；用户自己填的 key 只存本机浏览器
+  const llmServer = await read("app/lib/llm-server.ts");
+  const llmConfig = await read("app/lib/llm-config.ts");
+  assert.match(llmServer, /process\.env\.DEEPSEEK_API_KEY/);
+  assert.match(llmServer, /resolveModelTarget/);
+  assert.match(llmConfig, /localStorage\.setItem\(STORAGE_KEY/);
+  assert.doesNotMatch(route, /DEEPSEEK_API_KEY/);
+  assert.match(llmServer, /deepseek-v4-flash/);
+  assert.match(route, /resolveModelTarget/);
   assert.match(route, /Cache-Control/);
   assert.match(route, /isSameOriginRequest/);
   assert.match(contract, /requiresConfirmation: true/);
