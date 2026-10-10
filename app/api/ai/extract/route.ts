@@ -4,6 +4,7 @@ import {
   parseAndNormalizeModelResult,
   validateExtractRequest,
 } from "../../../lib/ai-contract";
+import { describeModelFailure, readModelErrorDetail } from "../../../lib/model-error";
 
 // 文件/截图信息抽取：DeepSeek V4.1 Flash（原生多模态）
 const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
@@ -67,14 +68,9 @@ export async function POST(request: Request) {
     });
 
     if (!upstream.ok) {
-      return errorResponse(
-        "MODEL_REQUEST_FAILED",
-        upstream.status === 401 || upstream.status === 403
-          ? "模型服务鉴权失败，请检查服务端密钥。"
-          : "模型服务暂时不可用，请稍后重试或手动录入。",
-        upstream.status === 429 ? 429 : 502,
-        true,
-      );
+      const failure = describeModelFailure(upstream.status, await readModelErrorDetail(upstream));
+      const manual = failure.code === "MODEL_INSUFFICIENT_BALANCE" || failure.code === "MODEL_AUTH_FAILED";
+      return errorResponse(failure.code, failure.message + (manual ? "也可以先手动录入这份资料。" : ""), failure.status, true);
     }
 
     const data = (await upstream.json()) as ModelResponse;

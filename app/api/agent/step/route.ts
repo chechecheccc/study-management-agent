@@ -5,6 +5,7 @@ import { sanitizeAgentContext, sanitizeAgentMessages } from "../../../agent/prot
 import type { AgentToolCall } from "../../../agent/protocol";
 import { buildAgentSystemPrompt } from "../../../agent/prompts";
 import { toolSchemasForModel } from "../../../agent/tools";
+import { describeModelFailure, readModelErrorDetail } from "../../../lib/model-error";
 
 // Agent 对话与工具调用：DeepSeek V4.1 Flash（OpenAI 兼容接口）
 const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
@@ -94,14 +95,9 @@ export async function POST(request: Request) {
     });
 
     if (!upstream.ok) {
-      return errorResponse(
-        "MODEL_REQUEST_FAILED",
-        upstream.status === 401 || upstream.status === 403
-          ? "模型服务鉴权失败，请检查服务端密钥。"
-          : "模型服务暂时不可用，请稍后重试。",
-        upstream.status === 429 ? 429 : 502,
-        true,
-      );
+      // 把上游的真实原因（余额不足 / 密钥失效 / 频率限制）透出来
+      const failure = describeModelFailure(upstream.status, await readModelErrorDetail(upstream));
+      return errorResponse(failure.code, failure.message, failure.status, true);
     }
 
     const data = (await upstream.json()) as ModelStepResponse;
