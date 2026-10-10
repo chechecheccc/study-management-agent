@@ -58,6 +58,7 @@ import { StudyIntro } from "./components/study-intro";
 import { LoginScreen } from "./components/login-screen";
 import { AccountPanel } from "./components/account-panel";
 import { applyPresets, isPresetCourseId, isPresetResourceId } from "./lib/presets";
+import { fitSessionsToAvailability, parseAvailability } from "./lib/availability";
 import { formatPlanDate, planSummary, sanitizePlanSessions } from "./lib/review-plan";
 import type { PlanSession } from "./lib/review-plan";
 
@@ -114,6 +115,8 @@ type TaskConfirmDraft = {
 type PlanConfirmState = {
   courseName: string;
   sessions: PlanSession[];
+  /** 因为要落在用户方便的时间窗里，做了哪些调整 */
+  adjustment?: string;
 };
 
 /** 复习计划页的状态：空闲 / 正在规划 / 这次没排出草案 */
@@ -175,6 +178,10 @@ export default function Home() {
   const [input, setInput] = useState("");
   const [search, setSearch] = useState("");
   const [modelConfigured, setModelConfigured] = useState<boolean | null>(null);
+  // 桌面通知权限：数据管理页要显示当前状态
+  const [notificationPermission, setNotificationPermission] = useState<NotificationPermission | "unsupported">(
+    typeof Notification === "undefined" ? "unsupported" : Notification.permission,
+  );
   const [agentRunning, setAgentRunning] = useState(false);
   // 主动巡检等后台任务运行时不锁定输入框
   const [agentBackground, setAgentBackground] = useState(false);
@@ -230,6 +237,9 @@ export default function Home() {
   const [reviewPlanStatus, setReviewPlanStatus] = useState<ReviewPlanStatus>({ state: "idle" });
   // 这次复习计划是为哪门课排的：模型没给准课程名时用它兜底
   const reviewTargetCourseRef = useRef("");
+  // 用户说的空闲时间与考试时间：排计划时的硬约束
+  const reviewAvailabilityRef = useRef("");
+  const reviewDeadlineRef = useRef<number | null>(null);
   const reviewRunIdRef = useRef(0);
   const reviewPlanArrivedRunRef = useRef(0);
   const pendingPlanConfirmRef = useRef<PlanConfirmState | null>(null);
@@ -289,21 +299,38 @@ export default function Home() {
     return () => cleanups.forEach((cleanup) => cleanup());
   }, { scope: appRef });
 
+  // 只在"切换页面"时播一次整页入场。
+  // 以前这里依赖了确认卡和入库队列，于是生成复习计划 / 收到确认卡时整页会重播一次，
+  // 看起来就是"页面跳一下再出来"——现在拆开：整页只认 view。
   useGSAP(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     gsap.fromTo(
       ".view-surface .page-view, .view-surface .assistant-layout",
       { y: 16, autoAlpha: 0 },
       { y: 0, autoAlpha: 1, duration: 0.42, ease: "power2.out" },
     );
+  }, {
+    scope: appRef,
+    dependencies: [view],
+  });
+
+  // 新出现的卡片（确认卡、入库队列条目）单独播一次入场；
+  // 已经出现过的卡片不会再播，避免整屏重排造成的跳动。
+  useGSAP(() => {
+    if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
+    const fresh = gsap.utils
+      .toArray<HTMLElement>(".view-surface .gsap-action-card, .view-surface .queue-item")
+      .filter((element) => !element.dataset.entered);
+    if (!fresh.length) return;
+    fresh.forEach((element) => { element.dataset.entered = "1"; });
     gsap.fromTo(
-      ".view-surface .gsap-action-card, .view-surface .queue-item",
+      fresh,
       { y: 12, autoAlpha: 0 },
-      { y: 0, autoAlpha: 1, duration: 0.32, stagger: 0.045, ease: "power2.out", delay: 0.08 },
+      { y: 0, autoAlpha: 1, duration: 0.32, stagger: 0.045, ease: "power2.out", overwrite: "auto" },
     );
   }, {
     scope: appRef,
     dependencies: [view, Boolean(pendingTaskConfirm), Boolean(pendingPlanConfirm), importQueue.length],
-    revertOnUpdate: true,
   });
 
   // 只让"最新一条消息"播入场动画：历史消息不再重复播放，避免每次发送都满屏闪动
@@ -973,8 +1000,21 @@ export default function Home() {
         return { ok: true, summary: `已创建${type}「${title}」，截止 ${formatDate(task.dueAt)}` };
       }
       case "save_review_plan": {
-        const sessions = sanitizePlanSessions(args.sessions);
+        const rawSessions = sanitizePlanSessions(args.sessions);
+        const fitted = fitSessionsToAvailability(
+          rawSessions,
+          parseAvailability(reviewAvailabilityRef.current),
+          reviewDeadlineRef.current,
+        );
+        const sessions = fitted.sessions;
         if (!sessions.length) {
+          if (rawSessions.length) {
+            reviewPlanArrivedRunRef.current = reviewRunIdRef.current;
+            return {
+              ok: false,
+              summary: `按你选的时间（${reviewAvailabilityRef.current || "未说明"}）排不下这些安排，未写入。可以把空闲时间放宽一点再排。`,
+            };
+          }
           reviewPlanArrivedRunRef.current = reviewRunIdRef.current;
           return {
             ok: false,
@@ -999,7 +1039,11 @@ export default function Home() {
           };
         });
         setSnapshot((current) => ({ ...current, tasks: [...tasks, ...current.tasks] }));
-        return { ok: true, summary: `已把 ${tasks.length} 个复习安排写入「${courseLabel}」`, data: { count: tasks.length } };
+        return {
+          ok: true,
+          summary: `已把 ${tasks.length} 个复习安排写入「${courseLabel}」` + (fitted.adjustment ? `（${fitted.adjustment}）` : ""),
+          data: { count: tasks.length },
+        };
       }
       default:
         return { ok: false, summary: `未知工具：${call.name}` };
@@ -1080,11 +1124,18 @@ export default function Home() {
       if (call.name === "save_review_plan") {
         reviewPlanArrivedRunRef.current = reviewRunIdRef.current;
         const plannedCourseId = resolveCourseId(asString(call.arguments.courseName)) || reviewTargetCourseRef.current;
+        // 模型经常无视"我什么时候有空"，这里强制对齐一遍（挪时间 / 去掉排不下的）
+        const fitted = fitSessionsToAvailability(
+          sanitizePlanSessions(call.arguments.sessions),
+          parseAvailability(reviewAvailabilityRef.current),
+          reviewDeadlineRef.current,
+        );
         setPendingPlanConfirm({
           courseName:
             snapshotRef.current.courses.find((item) => item.id === plannedCourseId)?.name ||
             asString(call.arguments.courseName),
-          sessions: sanitizePlanSessions(call.arguments.sessions),
+          sessions: fitted.sessions,
+          adjustment: fitted.adjustment,
         });
         setReviewPlanStatus((current) => (current.state === "running" ? { state: "idle" } : current));
         setConfirmError("");
@@ -1389,7 +1440,7 @@ export default function Home() {
     const goal = [
       `请为「${courseName || "未分类课程"}」制定复习计划。`,
       `考试或目标时间：${Number.isNaN(exam.getTime()) ? examAt : exam.toISOString()}。`,
-      `我方便学习的时间：${availability || "未说明"}。`,
+      `我方便学习的时间（硬性要求，所有安排都必须落在这个范围里，不要排到其它星期或其它时段）：${availability || "未说明"}。`,
       "请先调用工具查询该课程的未完成任务与已有资料，再把计划拆成具体到天、每次 30-90 分钟的可执行安排；" +
         "每次安排都写清这次要用哪份资料（sessions[].resourceName 填资料标题），所有安排必须早于考试时间。" +
         "最后必须调用 save_review_plan 把计划结构化提交（不要只在回复里用文字列计划，也不要再反问用户；信息不足就按合理默认值排，并在标题里写明假设）。" +
@@ -1397,10 +1448,14 @@ export default function Home() {
     ].join("");
 
     reviewTargetCourseRef.current = courseId;
+    reviewAvailabilityRef.current = availability;
+    reviewDeadlineRef.current = Number.isNaN(exam.getTime()) ? null : exam.getTime();
     reviewPlanArrivedRunRef.current = 0;
     await runAgent(goal);
     if (reviewRunIdRef.current !== runId) return; // 这一轮已经被新的一轮接管了
     reviewTargetCourseRef.current = "";
+    reviewAvailabilityRef.current = "";
+    reviewDeadlineRef.current = null;
     const arrived = reviewPlanArrivedRunRef.current === runId;
     const lastReply = [...agentHistoryRef.current].reverse().find((item) => item.role === "assistant")?.content ?? "";
     setReviewPlanStatus((current) => {
@@ -2119,10 +2174,11 @@ export default function Home() {
       return;
     }
     const permission = await Notification.requestPermission();
+    setNotificationPermission(permission);
     addAssistantMessage(
       permission === "granted"
-        ? "桌面提醒已开启。任务临近截止时（按提醒规则：提前 3 天、1 天、2 小时），我会弹出系统通知。"
-        : "没有获得通知权限。你仍会在对话里收到提醒；想开桌面通知可以在浏览器设置里允许。",
+        ? "桌面提醒已开启。任务临近截止时（按提醒规则：提前 3 天、1 天、2 小时），我会弹出系统通知——记得让浅浅这个页面开着。想在关掉网页后也收到提醒，可以去「数据管理 → 导出日历 (.ics)」导入系统日历。"
+        : "没有获得通知权限。你仍会在对话里收到提醒；想开桌面通知可以在浏览器设置里允许，或者用「导出日历 (.ics)」让系统日历提醒你。",
     );
   };
 
@@ -2466,6 +2522,7 @@ export default function Home() {
               onSaveProfile={(next) => { const cleaned = sanitizeProfile(next); setProfile(cleaned); saveProfile(cleaned); addAssistantMessage("你的画像已更新，智能体之后的每一轮思考都会记住。 "); }}
               onExport={exportBackup}
               onExportICal={exportICalendar}
+              notificationPermission={notificationPermission}
               onEnableNotifications={enableNotifications}
               onImport={() => importInputRef.current?.click()}
               onFile={importBackup}
@@ -2831,6 +2888,7 @@ function PlanConfirmCard({ plan, error, onApprove, onReject }: { plan: PlanConfi
     <div className="action-card gsap-action-card">
       <div className="action-label">浅浅请求写入 · 复习计划（{plan.courseName || "未指定课程"}）</div>
       <div className="plan-summary">{planSummary(plan.sessions)}</div>
+      {plan.adjustment ? <div className="plan-adjust-note">已按你的空闲时间对齐：{plan.adjustment}</div> : null}
       <div className="plan-session-list">
         {plan.sessions.map((session) => (
           <div className="plan-item" key={`${session.date}-${session.title}`}>
@@ -3655,6 +3713,7 @@ function ReviewView({
           </button>
           <small className="form-help">
             浅浅会先查「{course?.name ?? "课程"}」的未完成任务和已有资料，再排出具体到天的安排；
+            安排只会落在你写的时间段里（写「周末上午 09:00–12:00」就只排周末上午）。
             <strong>确认保存后</strong>才会写进任务中心。
           </small>
         </div>
@@ -3670,6 +3729,7 @@ function ReviewView({
                 <span className="soft-badge">{availability}</span>
               </div>
               <div className="plan-summary">{planSummary(plan.sessions)}</div>
+              {plan.adjustment ? <div className="plan-adjust-note">已按你的空闲时间对齐：{plan.adjustment}</div> : null}
               <div className="plan-session-list">
                 {plan.sessions.map((session, index) => (
                   <PlanItem
@@ -3746,9 +3806,14 @@ function PlanItem({ date, title, duration, note }: { date: string; title: string
   );
 }
 
-function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, onSyncNow, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; syncState: "idle" | "syncing" | "error" | "offline"; syncMessage: string; lastSyncedAt: string | null; conversationCount: number; onSyncNow: () => void; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
+function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, notificationPermission, onSyncNow, onSaveProfile, onExport, onExportICal, onEnableNotifications, onImport, onFile, onReset, inputRef }: { snapshot: AppSnapshot; profile: UserProfile; syncState: "idle" | "syncing" | "error" | "offline"; syncMessage: string; lastSyncedAt: string | null; conversationCount: number; notificationPermission: NotificationPermission | "unsupported"; onSyncNow: () => void; onSaveProfile: (profile: UserProfile) => void; onExport: () => void; onExportICal: () => void; onEnableNotifications: () => void | Promise<void>; onImport: () => void; onFile: (file?: File) => void; onReset: () => void; inputRef: React.RefObject<HTMLInputElement | null>; }) {
   const [draft, setDraft] = useState<UserProfile>(profile);
   const [confirmReset, setConfirmReset] = useState(false);
+  const notificationLabel =
+    notificationPermission === "granted" ? "桌面提醒已开启"
+      : notificationPermission === "denied" ? "桌面提醒被浏览器拦截了"
+        : notificationPermission === "unsupported" ? "此浏览器不支持桌面提醒"
+          : "开启桌面提醒";
   // 本机资料里记录的文件大小合计
   const totalFileBytes = snapshot.resources.reduce((sum, resource) => sum + (resource.fileSize ?? 0), 0);
   const fileSizeLabel = totalFileBytes > 0 ? formatBytes(totalFileBytes) : "—";
@@ -3769,7 +3834,12 @@ function DataView({ snapshot, profile, syncState, syncMessage, lastSyncedAt, con
             <div><strong>{snapshot.tasks.length}</strong><span>条任务</span></div>
             <div><strong>{conversationCount}</strong><span>个对话</span></div>
           </div>
-          <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><button className="quiet-button" onClick={onExportICal}>导出日历 (.ics)</button><button className="quiet-button" onClick={onEnableNotifications}>开启桌面提醒</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
+          <div className="data-actions"><button className="primary-button" onClick={onExport}>下载本地备份</button><button className="quiet-button" onClick={onImport}>恢复备份</button><button className="quiet-button" onClick={onExportICal}>导出日历 (.ics)</button><button className="quiet-button" onClick={onEnableNotifications}>{notificationLabel}</button><input ref={inputRef} type="file" accept="application/json" hidden onChange={(event) => onFile(event.target.files?.[0])} /></div>
+          <p className="data-note">
+            提醒怎么生效：<b>桌面提醒</b>只在浅浅这个页面开着的时候弹（浏览器通知权限）；
+            <b>导出日历</b>会把每条任务连同它的提醒规则写进 .ics（含提前 3 天/1 天/2 小时等闹钟），
+            导入手机或电脑日历后，<b>关掉网页也会照常提醒</b>。
+          </p>
         </div>
         <div className="data-card">
           <div className="card-kicker">CLOUD SYNC</div>

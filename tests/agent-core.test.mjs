@@ -268,6 +268,12 @@ test("iCal 导出：生成合法 VEVENT 并转义特殊字符", () => {
   assert.match(ics, /SUMMARY:\[DDL\] 实验报告\\, 第2部分/);
   assert.match(ics, /DTSTART:20260912T120000Z/);
   assert.match(ics, /数据库系统/);
+  // 有 DTEND 和 VALARM，导入系统日历后才会真的提醒
+  assert.match(ics, /DTEND:/);
+  assert.match(ics, /BEGIN:VALARM/);
+  assert.match(ics, /TRIGGER:-PT1440M/); // 提前1天
+  assert.match(ics, /TRIGGER:PT0M/);
+  assert.equal((ics.match(/BEGIN:VALARM/g) ?? []).length, 2);
 });
 
 test("记忆笔记：去重、置顶最新、上限 20 条", () => {
@@ -539,6 +545,10 @@ test("任务分组：未逾期在前（今天/明天/本周/更晚），已逾�
 });
 
 import {
+  parseAvailability,
+  fitSessionsToAvailability,
+} from "../app/lib/availability.ts";
+import {
   parsePlanTimestamp,
   sanitizePlanSessions,
   planSummary,
@@ -586,6 +596,63 @@ test("复习计划：草案会排序去重、兜住时长", () => {
   assert.match(formatPlanDate(sessions[0].date), /10\/12/);
   // 非数组直接当空计划
   assert.deepEqual(sanitizePlanSessions("不是数组"), []);
+});
+
+test("空闲时间解析：周末上午 / 工作日晚上 / 每天 N 分钟", () => {
+  const weekend = parseAvailability("周末上午 09:00–12:00");
+  assert.deepEqual(weekend.days, [0, 6]);
+  assert.equal(weekend.startMinutes, 9 * 60);
+  assert.equal(weekend.endMinutes, 12 * 60);
+
+  const workday = parseAvailability("工作日晚上 19:00–21:00");
+  assert.deepEqual(workday.days, [1, 2, 3, 4, 5]);
+  assert.equal(workday.startMinutes, 19 * 60);
+
+  const range = parseAvailability("周一到周五晚上");
+  assert.deepEqual(range.days, [1, 2, 3, 4, 5]);
+  assert.equal(range.startMinutes, 19 * 60);
+
+  const daily = parseAvailability("每天 60 分钟");
+  assert.deepEqual(daily.days, [0, 1, 2, 3, 4, 5, 6]);
+  assert.equal(daily.minutesPerSession, 60);
+
+  // 没写清楚就不限制，别把用户没说的话当成规则
+  assert.deepEqual(parseAvailability("你看着办").days, []);
+});
+
+test("复习计划必须落在用户方便的时间：选了周末上午就不会排到周一", () => {
+  const availability = parseAvailability("周末上午 09:00–12:00");
+  const deadline = new Date("2026-10-25T00:00:00+08:00").getTime();
+  const input = [
+    { date: "2026-10-12T19:00:00+08:00", title: "周一安排", durationMinutes: 60 },
+    { date: "2026-10-13T19:00:00+08:00", title: "周二安排", durationMinutes: 60 },
+    { date: "2026-10-17T19:00:00+08:00", title: "周六晚上", durationMinutes: 60 },
+  ];
+  const { sessions, adjustment } = fitSessionsToAvailability(input, availability, deadline);
+  assert.equal(sessions.length, 3);
+  for (const session of sessions) {
+    const date = new Date(session.date);
+    assert.ok([0, 6].includes(date.getDay()), "排到了非周末：" + session.title);
+    assert.ok(date.getHours() >= 9 && date.getHours() < 12, "排到了非上午：" + session.title);
+  }
+  // 早于今天的安排会被挪到最近的可排日期
+  const past = fitSessionsToAvailability(
+    [{ date: "2020-01-01T19:00:00+08:00", title: "过期安排", durationMinutes: 45 }],
+    availability,
+    deadline,
+  );
+  assert.equal(past.sessions.length, 1);
+  assert.ok(new Date(past.sessions[0].date).getTime() > Date.now() - 86_400_000);
+  assert.match(adjustment, /重新对齐/);
+
+  // 排不进时间窗（超过考试时间）就明确去掉并说明
+  const late = fitSessionsToAvailability(
+    [{ date: "2026-10-30T19:00:00+08:00", title: "考后安排", durationMinutes: 60 }],
+    availability,
+    deadline,
+  );
+  assert.equal(late.sessions.length, 0);
+  assert.match(late.adjustment, /已去掉/);
 });
 
 test("今天判定与提醒规则组合", () => {
