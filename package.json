@@ -14,6 +14,7 @@
     "test:e2e": "node tests/run-all.mjs",
     "eval:agent": "node tests/agent-eval.mjs",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "setup": "node scripts/setup.mjs",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "drizzle-kit migrate",
     "db:seed:users": "node --experimental-strip-types scripts/seed-users.mjs",

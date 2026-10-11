@@ -91,30 +91,63 @@ worker/ build/ .openai/   构建脚手架（Vinext/Workers 运行时需要，勿
 
 ## 快速开始
 
-前置：Node.js ≥ 22.13、PostgreSQL ≥ 14（本机或远程都行）。
+前置：Node.js ≥ 22.13；PostgreSQL ≥ 14（本机或远程都行，没装可以看下面的“开箱即用”）。
 
 ```bash
 # 1) 装依赖
 npm install
 
-# 2) 建库（示例：本机 PostgreSQL）
-#    createdb qianqian    （或 psql -c "CREATE DATABASE qianqian;")
+# 2) 配置环境变量
+cp .env.example .env.local     # 编辑它：填自己的库地址和模型密钥
 
-# 3) 配置环境变量
-cp .env.example .env.local     # 然后编辑，填自己的库地址与模型密钥
+# 3) 一条命令：自动建库 + 建表 + 初始化账号（可重复执行）
+npm run setup
 
-# 4) 建表（把 drizzle/ 里的迁移全部应用）
-npm run db:migrate
-
-# 5) 初始化账号：admin / student1 / student2
-npm run db:seed:users
-
-# 6) 启动
-npm run dev        # http://localhost:3000
+# 4) 启动
+npm run dev                    # http://localhost:3000
 ```
 
 登录：管理员 `admin / admin123`，普通用户 `student1 / 123456`、`student2 / 123456`。
 **第一次登录后请立刻在「设置 → 账号 → 修改密码」里改掉默认密码。**
+
+### 数据库怎么做到“开箱即用”
+
+**做法 A：一条命令（推荐，本机已装 PostgreSQL）**
+
+```bash
+npm run setup
+```
+
+它会按 `.env.local` 里的 `DATABASE_URL` 自动：检测连接 → 库/账号不存在就用管理员账号建好 → 建表 → 初始化 `admin / student1 / student2`。
+重复执行是安全的（已存在的都跳过）。需要建库权限时，会提示你输入本机 `postgres` 超级用户密码，也可以提前设好：
+
+```bash
+# Windows PowerShell
+$env:PG_ADMIN_URL="postgresql://postgres:你的密码@127.0.0.1:5432/postgres"; npm run setup
+```
+
+**做法 B：对方电脑没装 PostgreSQL（便携版，免安装）**
+
+下载 PostgreSQL 官方 **binaries zip**（不是 installer），解压到 `D:\pgsql`，然后：
+
+```bat
+D:\pgsql\bin\initdb.exe -D D:\pgsql\data -U postgres --pwprompt
+D:\pgsql\bin\pg_ctl.exe -D D:\pgsql\data -l D:\pgsql\log.txt start
+```
+
+之后回到项目目录执行 `npm run setup` 即可（密码就是你刚设的那个）。
+
+**做法 C：对方完全零安装（你自己的机器当数据库服务器）**
+
+对方只需把 `DATABASE_URL` 改成你的局域网地址，本机什么都不用装：
+
+1. 你的机器上打开 `D:\ruanjian\postgresql\data\pg_hba.conf`，末尾加一行：`host all all 0.0.0.0/0 scram-sha-256`
+2. 重启 PostgreSQL 服务；Windows 防火墙放行 5432 端口
+3. 对方：`DATABASE_URL=postgresql://qianqian:qianqian123@你的局域网IP:5432/qianqian`
+
+> ⚠️ 这等于把数据库对局域网开放，仅在可信网络里用；用完建议把那行注释掉。
+
+> 当然，也可以只把 **网址**给别人：你自己 `npm run build && npm start` 跑一份，别人浏览器打开就能用，连 `.env.local` 都不用给。
 
 ### 环境变量（`.env.local`）
 
@@ -159,7 +192,8 @@ npm run db:seed:presets 第1章.pdf 第2章.pdf   # 或指定文件
 | `npm run lint` | ESLint |
 | `npm test` | 构建 + 渲染测试 + Agent 单元测试（快） |
 | `npm run test:e2e` | 全量端到端测试（需先 `npm run dev`） |
-| `npm run db:migrate` | 应用迁移（新库建表；已有库是安全的空操作） |
+| `npm run setup` | **一键初始化：自动建库 + 建表 + 初始化账号** |
+| `npm run db:migrate` | 只应用迁移（新库建表；已有库是安全的空操作） |
 | `npm run db:seed:users` | 初始化 admin / student1 / student2 |
 | `npm run db:seed:presets` | 写入预设课件原件 |
 | `npm run accounts:clean` | 清理测试账号（加 `--apply` 才真删） |
