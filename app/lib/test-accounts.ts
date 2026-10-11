@@ -43,6 +43,7 @@ const SHORT_PREFIXES = [
   "alice",
   "bob",
   "conv",
+  "courset",
   "diag",
   "lib",
   "llm",
