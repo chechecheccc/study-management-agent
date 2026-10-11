@@ -109,5 +109,102 @@ export function saveFiredReminders(keys: Set<string>) {
   }
 }
 
+// ---------- 提醒去重与限量 ----------
+//
+// 早期版本的"已提醒"记录只写在**本机 localStorage**，于是每换一个浏览器/设备都会把同一条提醒再发一遍，
+// 对话里就堆了一串重复提醒；任务删掉之后那些历史提醒还留在聊天记录里，看着像"删了还提醒"。
+// 现在把"提醒过"这件事记进消息本身（steps 里的标记），随对话一起同步，做到：
+//   1) 同一档提醒跨设备只发一次；
+//   2) 每个任务每天最多 2 条提醒；
+//   3) 加载历史时清掉重复的、以及任务已经删掉的提醒。
 
+/** 提醒消息里带的标记前缀，后面接 `${taskId}@${tier}` */
+export const REMINDER_MARK = "reminder:";
+/** 每个任务每天最多提醒几次 */
+export const MAX_REMINDERS_PER_DAY = 2;
 
+type MarkableMessage = { text?: string; steps?: unknown; createdAt?: string };
+
+function markerOf(message: MarkableMessage): string | null {
+  const steps = (message as { steps?: unknown }).steps;
+  if (!Array.isArray(steps)) return null;
+  for (const step of steps) {
+    const id = (step as { id?: unknown })?.id;
+    if (typeof id === "string" && id.startsWith(REMINDER_MARK)) return id;
+  }
+  return null;
+}
+
+/** 老消息没有标记，就从文案里取任务名（⏰ 提醒：「XX」…） */
+function titleOf(message: MarkableMessage): string {
+  const match = (message.text ?? "").match(/「([^」]+)」/);
+  return match ? match[1] : "";
+}
+
+function isReminderMessage(message: MarkableMessage): boolean {
+  return Boolean(markerOf(message)) || (message.text ?? "").startsWith("⏰");
+}
+
+export type ReminderMark = { markerId: string; taskKey: string; at: number };
+
+/** 从对话记录里收集"已经提醒过"的标记（标记存在消息里，会随对话同步） */
+export function collectReminderMarks(
+  conversations: Array<{ messages?: MarkableMessage[] }> = [],
+): ReminderMark[] {
+  const marks: ReminderMark[] = [];
+  for (const conversation of conversations) {
+    for (const message of conversation.messages ?? []) {
+      const marker = markerOf(message);
+      if (!marker) continue;
+      const body = marker.slice(REMINDER_MARK.length);
+      marks.push({
+        markerId: marker,
+        taskKey: body.split("@")[0] ?? "",
+        at: Date.parse(message.createdAt ?? "") || 0,
+      });
+    }
+  }
+  return marks;
+}
+
+/** 这个任务今天已经提醒过几次 */
+export function countRemindersToday(marks: ReminderMark[], taskKey: string, now: Date = new Date()) {
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+  return marks.filter((mark) => mark.taskKey === taskKey && mark.at >= start).length;
+}
+
+/**
+ * 清理历史提醒消息：
+ *   - 任务已经不存在（按 id 或标题对不上）的提醒直接丢掉；
+ *   - 同一个任务同一天最多保留 maxPerDay 条（保留最早的几条）。
+ */
+export function pruneReminderMessages<T extends MarkableMessage>(
+  messages: T[],
+  options: { taskIds?: string[]; taskTitles?: string[]; maxPerDay?: number } = {},
+): T[] {
+  const maxPerDay = options.maxPerDay ?? MAX_REMINDERS_PER_DAY;
+  const ids = new Set(options.taskIds ?? []);
+  const titles = new Set(options.taskTitles ?? []);
+  const hasTaskIndex = ids.size > 0 || titles.size > 0;
+  const seen = new Map<string, number>();
+  const out: T[] = [];
+
+  for (const message of messages) {
+    if (!isReminderMessage(message)) {
+      out.push(message);
+      continue;
+    }
+    const marker = markerOf(message);
+    const taskKey = marker ? marker.slice(REMINDER_MARK.length).split("@")[0] : titleOf(message);
+    // 任务已经不在了：这条提醒不再保留
+    if (hasTaskIndex && taskKey && !ids.has(taskKey) && !titles.has(taskKey)) continue;
+
+    const day = (message.createdAt ?? "").slice(0, 10) || "unknown";
+    const bucket = `${taskKey}@${day}`;
+    const count = seen.get(bucket) ?? 0;
+    if (count >= maxPerDay) continue;
+    seen.set(bucket, count + 1);
+    out.push(message);
+  }
+  return out;
+}

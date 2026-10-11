@@ -650,6 +650,7 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .llm-scope b { color: var(--ink); }
 .image-only-hint { color: #8b978c; font-size: 11px; }
 .llm-form input { font-size: 11px; }
+.settings-note { margin: 6px 0 10px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 .settings-card code { background: #f2f0e6; border-radius: 5px; padding: 1px 5px; font-size: 10px; }
 @media (max-width: 720px) { .llm-form { grid-template-columns: 1fr; } }
 

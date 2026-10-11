@@ -7,6 +7,7 @@ import { runAgentLoop } from "../app/agent/loop.ts";
 import { AGENT_TOOLS, getToolSpec, toolSchemasForModel } from "../app/agent/tools.ts";
 import { applyDeletions } from "../app/lib/cloud-sync.ts";
 import { isTestUsername } from "../app/lib/test-accounts.ts";
+import { collectReminderMarks, countRemindersToday, pruneReminderMessages, MAX_REMINDERS_PER_DAY } from "../app/agent/reminders.ts";
 import { sanitizeAgentContext, sanitizeAgentMessages } from "../app/agent/protocol.ts";
 import { computeProactiveSignals, buildProactiveGoal } from "../app/agent/triggers.ts";
 import { formatProfileForPrompt, sanitizeProfile } from "../app/agent/memory.ts";
@@ -387,6 +388,38 @@ test("工具调用参数不全：只缺一个也拦下来", async () => {
   const result = events.find((event) => event.type === "tool_result");
   assert.equal(result.result.ok, false);
   assert.match(result.result.summary, /courseName/);
+});
+
+test("提醒去重：同一档提醒的标记会被收集（用于跨设备去重）", () => {
+  const now = new Date().toISOString();
+  const marks = collectReminderMarks([{
+    messages: [
+      { text: "⏰ 提醒：「实验报告」还有 1 天 截止。", steps: [{ id: "reminder:task-1@1440" }], createdAt: now },
+      { text: "普通消息", createdAt: now },
+      { text: "⏰ 老格式提醒，没有标记", createdAt: now },
+    ],
+  }]);
+  assert.equal(marks.length, 1);
+  assert.equal(marks[0].taskKey, "task-1");
+  assert.equal(countRemindersToday(marks, "task-1", new Date()), 1);
+  assert.equal(countRemindersToday(marks, "task-2", new Date()), 0);
+  assert.equal(MAX_REMINDERS_PER_DAY, 2);
+});
+
+test("提醒清理：任务删掉后的提醒被清掉，同一天重复的最多留 2 条", () => {
+  const today = new Date().toISOString();
+  const messages = [
+    { id: "m1", text: "普通消息", createdAt: today },
+    { id: "m2", text: "⏰ 提醒：「A」还有 3 天 截止。", steps: [{ id: "reminder:t1@4320" }], createdAt: today },
+    { id: "m3", text: "⏰ 提醒：「A」还有 1 天 截止。", steps: [{ id: "reminder:t1@1440" }], createdAt: today },
+    { id: "m4", text: "⏰ 提醒：「A」还有 2 小时 截止。", steps: [{ id: "reminder:t1@120" }], createdAt: today },
+    { id: "m5", text: "⏰ 提醒：「已经被删掉的任务」还有 1 天 截止。", createdAt: today },
+  ];
+  const pruned = pruneReminderMessages(messages, { taskIds: ["t1"], taskTitles: ["A"] });
+  assert.deepEqual(pruned.map((m) => m.id), ["m1", "m2", "m3"]);
+  // 不传任务索引时只做限量，不做删除
+  const keptAll = pruneReminderMessages([messages[4]], {});
+  assert.equal(keptAll.length, 1);
 });
 
 test("提醒规则解析：提前3天、1天、2小时", () => {

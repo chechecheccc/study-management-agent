@@ -14,6 +14,9 @@ await mkdir(SHOTS, { recursive: true });
 
 const RUN_ID = Date.now().toString(36).slice(-5);
 const TASK_MARK = `实验报告${RUN_ID.toUpperCase()}`;
+// 模型可能会把任务标题改写得更完整（例如「数据库系统实验报告提交（XXXXX）」），
+// 所以校验只用唯一的随机后缀，避免因为标题措辞变化而误判
+const MARK_SUFFIX = RUN_ID.toUpperCase();
 // 每次运行使用全新账号，避免历史对话与任务累积导致断言失真
 const E2E_USER = `smoke${RUN_ID}`;
 const E2E_PASS = "smoke123456";
@@ -148,10 +151,10 @@ try {
   let taskText = "";
   for (let i = 0; i < 15; i += 1) {
     taskText = (await page.locator(".page-view").textContent()) ?? "";
-    if (taskText.includes(TASK_MARK)) break;
+    if (taskText.includes(MARK_SUFFIX)) break;
     await page.waitForTimeout(1000);
   }
-  check("任务中心出现新建任务", taskText.includes(TASK_MARK), `查找标记=${TASK_MARK}`);
+  check("任务中心出现新建任务", taskText.includes(MARK_SUFFIX), `查找标记=${MARK_SUFFIX}`);
   await shot("04-tasks");
   // 6. 复习计划
   await page.locator(".nav-item", { hasText: "复习计划" }).click();

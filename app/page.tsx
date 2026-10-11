@@ -87,7 +87,18 @@ import { extractSearchableText } from "./lib/content-extract";
 import { buildICalendar } from "./lib/ical";
 import { addProfileNote, loadProfile, saveProfile, sanitizeProfile, setMemoryScope } from "./agent/memory";
 import { setReminderScope } from "./agent/reminders";
-import { computeDueReminders, formatMinutesLeft, loadFiredReminders, saveFiredReminders } from "./agent/reminders";
+import {
+  REMINDER_MARK,
+  MAX_REMINDERS_PER_DAY,
+  collectReminderMarks,
+  countRemindersToday,
+  pruneReminderMessages,
+  computeDueReminders,
+  formatMinutesLeft,
+  loadFiredReminders,
+  saveFiredReminders,
+} from "./agent/reminders";
+import type { ReminderMark } from "./agent/reminders";
 import type { UserProfile } from "./agent/memory";
 import { buildProactiveFallback, buildProactiveGoal, computeProactiveSignals } from "./agent/triggers";
 
@@ -293,6 +304,8 @@ export default function Home() {
 
   const batchRunningRef = useRef(false);
   const agentRunningRef = useRef(false);
+  /** 本次会话里已经发过的提醒标记（配合随对话同步的标记做去重） */
+  const sessionReminderMarksRef = useRef<ReminderMark[]>([]);
   /** 后台巡检（主动性巡检）进行中：它不占用导入队列，也不该挡住用户上传文件 */
   const agentBackgroundRef = useRef(false);
   const agentHistoryRef = useRef<HistoryMessage[]>([]);
@@ -504,6 +517,19 @@ export default function Home() {
       void saveConversation(migrated);
     }
     conversationList = mergeConversations(mergedConversations, conversationList);
+    // 清掉历史里堆积的提醒消息：重复的（老版本每换一个浏览器就会重复提醒），以及任务已经删掉的
+    const taskIds = withPresets.tasks.map((task) => task.id);
+    const taskTitles = withPresets.tasks.map((task) => task.title);
+    let reminderPruned = false;
+    conversationList = conversationList.map((conversation) => {
+      const pruned = pruneReminderMessages(conversation.messages, { taskIds, taskTitles });
+      if (pruned.length === conversation.messages.length) return conversation;
+      reminderPruned = true;
+      return { ...conversation, messages: pruned };
+    });
+    if (reminderPruned) {
+      for (const conversation of conversationList) void saveConversation(conversation);
+    }
     setConversations(conversationList);
     const latest = conversationList[0] ?? null;
     setActiveConversationId(latest?.id ?? null);
@@ -873,6 +899,20 @@ export default function Home() {
 
   function addAssistantMessage(text: string) {
     setMessages((current) => [...current, { id: makeId("message"), role: "assistant", text }]);
+  }
+
+  // 提醒消息带一个标记（存在 steps 里，随对话同步）：同一档提醒跨设备只发一次
+  function addReminderMessage(text: string, markerId: string, detail: string) {
+    setMessages((current) => [...current, {
+      id: makeId("message"),
+      role: "assistant",
+      text,
+      steps: [{ id: markerId, label: "提醒", status: "done" as const, detail }],
+    }]);
+    sessionReminderMarksRef.current = [
+      ...sessionReminderMarksRef.current,
+      { markerId, taskKey: markerId.slice(REMINDER_MARK.length).split("@")[0] ?? "", at: Date.now() },
+    ];
   }
 
   // ---------- Agent 循环接入 ----------
@@ -1830,8 +1870,17 @@ export default function Home() {
   useEffect(() => {
     if (!ready) return;
     const check = () => {
+      const now = new Date();
       const fired = loadFiredReminders();
-      const due = computeDueReminders(snapshotRef.current.tasks, new Date(), fired);
+      // 已经提醒过的标记：一部分存在消息里（随对话同步，换设备也认），一部分是本次会话刚发的
+      const marks = [...collectReminderMarks(conversationsRef.current), ...sessionReminderMarksRef.current];
+      const markIds = new Set(marks.map((mark) => mark.markerId));
+      const due = computeDueReminders(snapshotRef.current.tasks, now, fired).filter((reminder) => {
+        // 同一档提醒只发一次（别的设备发过也不再重复）
+        if (markIds.has(REMINDER_MARK + reminder.key)) return false;
+        // 每个任务每天最多提醒 2 次
+        return countRemindersToday(marks, reminder.taskId, now) < MAX_REMINDERS_PER_DAY;
+      });
       if (!due.length) return;
       due.forEach((reminder) => fired.add(reminder.key));
       saveFiredReminders(fired);
@@ -1839,7 +1888,7 @@ export default function Home() {
         const text = reminder.minutesLeft > 0
           ? `⏰ 提醒：「${reminder.title}」（${reminder.type}）还有 ${formatMinutesLeft(reminder.minutesLeft)} 截止。需要我帮你安排复习或调整计划吗？`
           : `⏰ 「${reminder.title}」（${reminder.type}）已到截止时间。完成后告诉我，我帮你标记；没完成的话可以帮你顺延。`;
-        addAssistantMessage(text);
+        addReminderMessage(text, REMINDER_MARK + reminder.key, `${reminder.title} · ${reminder.offsetLabel}`);
         if (typeof Notification !== "undefined" && Notification.permission === "granted") {
           new Notification("浅浅提醒", { body: `${reminder.title} · ${reminder.offsetLabel}` });
         }
@@ -2199,6 +2248,17 @@ export default function Home() {
       return next;
     });
     void deleteCloud("tasks", [taskId]);
+    // 任务删掉了，就不该再看到它的提醒：清掉带这个任务标记的提醒消息，并忘掉它的"已提醒"记录
+    const markerPrefix = `${REMINDER_MARK}${taskId}@`;
+    const isTaskReminder = (message: ChatMessage) => (message.steps ?? []).some((step) => step.id.startsWith(markerPrefix));
+    setMessages((current) => (current.some(isTaskReminder) ? current.filter((message) => !isTaskReminder(message)) : current));
+    sessionReminderMarksRef.current = sessionReminderMarksRef.current.filter((mark) => !mark.markerId.startsWith(markerPrefix));
+    const firedNow = loadFiredReminders();
+    let forgot = false;
+    for (const key of [...firedNow]) {
+      if (key.startsWith(`${taskId}@`)) { firedNow.delete(key); forgot = true; }
+    }
+    if (forgot) saveFiredReminders(firedNow);
     if (!options?.silent && task) addAssistantMessage(`已删除任务「${task.title}」。`);
   };
 
@@ -4678,6 +4738,7 @@ function SettingsView({
         <section className="settings-card">
           <div className="card-kicker">REMINDERS</div>
           <h3>提醒与日历</h3>
+          <p className="settings-note">提醒规则按「提前 N 天 / N 小时 / N 分钟」执行：同一档只提醒一次（换设备登录也不会重复），每个任务每天最多提醒 2 次；任务删掉后它的提醒会一并清掉。</p>
           <div className="settings-row">
             <div className="settings-row-main">
               <strong>桌面提醒</strong>
