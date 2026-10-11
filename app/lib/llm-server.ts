@@ -17,6 +17,24 @@ export type ModelTarget = {
 export const DEFAULT_ENDPOINT = "https://api.deepseek.com/chat/completions";
 export const DEFAULT_MODEL = "deepseek-v4-flash";
 
+/**
+ * 判断密钥是不是 .env.example 里的占位符。
+ * 刚拉下代码的人会把模板复制成 .env.local，里面写的是 replace-with-your-deepseek-key；
+ * 如果当成“已配置”，每次 AI 调用都会报认证失败，反而比“未配置”更让人困惑。
+ */
+export function isPlaceholderApiKey(apiKey: string | undefined | null) {
+  const key = (apiKey ?? "").trim().toLowerCase();
+  if (!key) return true;
+  return (
+    key.startsWith("replace-with") ||
+    key.includes("your-") ||
+    key.includes("你的") ||
+    key === "sk-xxx" ||
+    key === "changeme" ||
+    key === "todo"
+  );
+}
+
 export function resolveModelTarget(
   requested: unknown,
   kind: "agent" | "vision",
@@ -36,7 +54,7 @@ export function resolveModelTarget(
   }
 
   const apiKey = process.env.DEEPSEEK_API_KEY?.trim();
-  if (!apiKey) {
+  if (!apiKey || isPlaceholderApiKey(apiKey)) {
     return {
       ok: false,
       code: "MODEL_NOT_CONFIGURED",
