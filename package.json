@@ -19,7 +19,8 @@
     "db:migrate": "drizzle-kit migrate",
     "db:seed:users": "node --experimental-strip-types scripts/seed-users.mjs",
     "db:seed:presets": "node scripts/seed-preset-courseware.mjs",
-    "accounts:clean": "node --experimental-strip-types scripts/clean-test-users.mjs"
+    "accounts:clean": "node --experimental-strip-types scripts/clean-test-users.mjs",
+    "accounts:reset": "node --experimental-strip-types scripts/reset-password.mjs"
   },
   "dependencies": {
     "@gsap/react": "^2.1.2",

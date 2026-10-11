@@ -63,7 +63,12 @@ async function resolveAdminUrl(databaseUrl, override) {
   const asAppUser = `postgresql://${encodeURIComponent(url.username)}:${encodeURIComponent(url.password)}@${candidate.host}:${candidate.port}/postgres`;
   if ((await probe(asAppUser)).ok) return asAppUser;
 
-  // 再问超级用户密码
+  // 再问超级用户密码（没有交互终端时不能卡在这里）
+  if (!process.stdin.isTTY) {
+    console.error("当前不是交互终端，无法输入密码。请改用环境变量指定管理员连接串：");
+    console.error("  PG_ADMIN_URL=postgresql://postgres:密码@127.0.0.1:5432/postgres npm run setup");
+    return null;
+  }
   const rl = createInterface({ input: process.stdin, output: process.stdout });
   const password = (await rl.question("建库需要管理员权限，请输入本机 postgres 超级用户的密码（直接回车跳过）：")).trim();
   rl.close();

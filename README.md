@@ -1,6 +1,7 @@
 # 浅浅 qianqian · 个人学习管理智能体
 
 浅浅是一个**以 Agent 为核心**的个人学习管理应用：用一句话说出需求，它会自己查证你的课程、资料和任务，再动手；**写入之前一定先问你**。
+> 📦 **拿到项目要跑起来：看 [部署说明.md](./部署说明.md)**（Windows 双击 `启动浅浅.bat` 就行）。
 
 它不是一个"套壳聊天框"——真正的核心是 `app/agent/loop.ts` 里的 Agent 循环：感知 → 调模型决策 → 执行工具 → 观察结果 → 再决策，直到给出结论。
 
@@ -92,6 +93,8 @@ worker/ build/ .openai/   构建脚手架（Vinext/Workers 运行时需要，勿
 ## 快速开始
 
 前置：Node.js ≥ 22.13；PostgreSQL ≥ 14（本机或远程都行，没装可以看下面的“开箱即用”）。
+
+> Windows 可以直接**双击 `启动浅浅.bat`**，下面的步骤它会自动做完。
 
 ```bash
 # 1) 装依赖
@@ -197,6 +200,7 @@ npm run db:seed:presets 第1章.pdf 第2章.pdf   # 或指定文件
 | `npm run db:seed:users` | 初始化 admin / student1 / student2 |
 | `npm run db:seed:presets` | 写入预设课件原件 |
 | `npm run accounts:clean` | 清理测试账号（加 `--apply` 才真删） |
+| `npm run accounts:reset -- 用户名 新密码` | 忘了密码时重置（不动数据） |
 
 ## 测试
 
