@@ -7,6 +7,22 @@ import { files } from "../../../../db/schema";
 import { getSessionUser } from "../../../lib/server-auth";
 import { PRESET_FILE_SCOPE } from "../../../lib/presets";
 
+/** 删除服务端保存的文件本体（用于删掉"某一份"资料文件） */
+export async function DELETE(request: Request, context: { params: Promise<{ id: string }> }) {
+  const user = await getSessionUser(request);
+  if (!user) return new Response("请先登录。", { status: 401 });
+  const { id } = await context.params;
+  if (!id) return new Response("缺少文件 id", { status: 400 });
+  try {
+    await withPg(async (db) => {
+      await db.delete(files).where(and(eq(files.id, id), eq(files.userId, user.id)));
+    });
+    return new Response(null, { status: 204 });
+  } catch {
+    return new Response("删除文件失败", { status: 500 });
+  }
+}
+
 export async function GET(request: Request, context: { params: Promise<{ id: string }> }) {
   const user = await getSessionUser(request);
   if (!user) {

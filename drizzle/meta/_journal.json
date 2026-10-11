@@ -43,6 +43,13 @@
       "when": 1791692740199,
       "tag": "0005_perpetual_firebrand",
       "breakpoints": true
+    },
+    {
+      "idx": 6,
+      "version": "7",
+      "when": 1791716646813,
+      "tag": "0006_soft_kate_bishop",
+      "breakpoints": true
     }
   ]
 }

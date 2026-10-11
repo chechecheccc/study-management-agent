@@ -69,6 +69,7 @@ export async function POST(request: Request) {
         fileSize: typeof item.fileSize === "number" ? item.fileSize : null,
         mimeType: (item.mimeType as string | null) ?? null,
         contentText: (item.contentText as string | null) ?? null,
+        files: Array.isArray(item.files) ? (item.files as Array<Record<string, unknown>>).slice(0, 20) as never : [],
         updatedAt: String(item.updatedAt ?? now),
         deletedAt: (item.deletedAt as string | null) ?? null,
       };

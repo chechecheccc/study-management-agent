@@ -10,6 +10,18 @@ export type Course = {
   updatedAt?: string;
 };
 
+/** 一份资料可以挂多个文件（例如一份课堂笔记下既有截图又有讲义） */
+export type ResourceFile = {
+  /** 本机 IndexedDB 里的文件 id */
+  fileId?: string;
+  /** 服务端 files 表里的文件 id */
+  fileKey?: string;
+  name: string;
+  size?: number;
+  mimeType?: string;
+  uploadedAt?: string;
+};
+
 export type Resource = {
   id: string;
   title: string;
@@ -26,6 +38,8 @@ export type Resource = {
   mimeType?: string;
   /** 入库时提取的正文文本（PDF 文字层 / DOCX / PPTX / 图片识别摘要），供 Agent 检索与阅读 */
   contentText?: string;
+  /** 这份资料挂着的所有文件；老数据只有一个文件，由 resourceFiles() 兜底 */
+  files?: ResourceFile[];
   updatedAt?: string;
 };
 
@@ -386,9 +400,30 @@ export function emptySnapshot(): AppSnapshot {
  * 界面上会让人以为文件就在那儿。只有真的存了原文件（本机 fileId 或服务端 fileKey）才保留文件名。
  */
 export function stripMissingFileNames(resources: Resource[]): Resource[] {
-  return resources.map((resource) =>
-    resource.fileId || resource.fileKey || !resource.fileName ? resource : { ...resource, fileName: undefined },
-  );
+  return resources.map((resource) => (resourceFiles(resource).length ? resource : { ...resource, fileName: undefined, files: resource.files }));
+}
+
+/** 取出一份资料挂着的全部文件；兼容只有一个文件的老数据（只有真的存了文件才算） */
+export function resourceFiles(resource: Resource): ResourceFile[] {
+  if (Array.isArray(resource.files) && resource.files.length) return resource.files;
+  if (resource.fileId || resource.fileKey) {
+    return [{
+      fileId: resource.fileId,
+      fileKey: resource.fileKey,
+      name: resource.fileName ?? "原文件",
+      size: resource.fileSize,
+      mimeType: resource.mimeType,
+    }];
+  }
+  // 只有文件名、没有任何真实文件：那是早期演示数据留下的假名字，不算文件
+  return [];
+}
+
+/** 把老的单文件字段搬进 files[]，让后续逻辑只认 files */
+export function withResourceFiles(resource: Resource): Resource {
+  if (Array.isArray(resource.files) && resource.files.length) return resource;
+  const files = resourceFiles(resource);
+  return files.length ? { ...resource, files } : { ...resource, files: [], fileName: undefined };
 }
 
 export function demoSnapshot(): AppSnapshot {

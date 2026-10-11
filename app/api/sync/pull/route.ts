@@ -58,6 +58,7 @@ export async function GET(request: Request) {
           fileSize: row.fileSize,
           mimeType: row.mimeType,
           contentText: row.contentText,
+          files: row.files ?? [],
           updatedAt: row.updatedAt,
           deletedAt: row.deletedAt,
         })),

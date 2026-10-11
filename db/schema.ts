@@ -107,6 +107,8 @@ export const resources = pgTable(
     mimeType: text("mime_type"),
     /** 入库时提取的正文，供智能体检索与阅读 */
     contentText: text("content_text"),
+    /** 这份资料挂着的文件列表（本机 fileId / 服务端 fileKey / 名称 / 大小） */
+    files: jsonb("files").$type<Array<{ fileId?: string; fileKey?: string; name: string; size?: number; mimeType?: string; uploadedAt?: string }>>().notNull().default([]),
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
   },

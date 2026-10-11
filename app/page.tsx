@@ -28,8 +28,10 @@ import {
   setDataScope,
   sortCourses,
   stripMissingFileNames,
+  resourceFiles,
+  withResourceFiles,
 } from "./lib/local-store";
-import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
+import type { ChatLogRecord, ConversationRecord, ResourceFile } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
 import { applyDeletions, deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, serverFileUrl, touchSnapshot, uploadFileToServer } from "./lib/cloud-sync";
 import {
@@ -291,6 +293,8 @@ export default function Home() {
 
   const batchRunningRef = useRef(false);
   const agentRunningRef = useRef(false);
+  /** 后台巡检（主动性巡检）进行中：它不占用导入队列，也不该挡住用户上传文件 */
+  const agentBackgroundRef = useRef(false);
   const agentHistoryRef = useRef<HistoryMessage[]>([]);
   const confirmResolverRef = useRef<{ settle: (decision: ConfirmationDecision) => void; timerId: number } | null>(null);
   const cancelledImportIdsRef = useRef(new Set<string>());
@@ -475,7 +479,8 @@ export default function Home() {
 
     const base = merged.courses.length ? { ...merged, courses: normalizeCourseOrder(merged.courses) } : demoSnapshot();
     // 旧数据里可能留着并不存在的文件名，这里统一清掉，避免界面显示"高数有 pptx"这种误导
-    const next = { ...base, resources: stripMissingFileNames(base.resources) };
+    // 老数据只有单个文件字段，这里统一搬进 files[]，后面所有逻辑只认 files
+    const next = { ...base, resources: stripMissingFileNames(base.resources.map(withResourceFiles)) };
     // 登录/合并后的这一份就是"已知最新"，不要给它打新时间戳，否则会把其它设备刚改的数据顶掉
     syncedSnapshotRef.current = next;
     // 预设课程与预设课件：每个账号都补一份（用户删过的除外）。
@@ -1073,7 +1078,16 @@ export default function Home() {
             setSnapshot((current) => ({
               ...current,
               resources: current.resources.map((entry) => entry.id === resourceId
-                ? { ...entry, fileName: file.name, fileId: record.id, fileSize: record.size, mimeType: record.type }
+                ? {
+                    ...entry,
+                    files: [{
+                      fileId: record.id,
+                      name: file.name,
+                      size: record.size,
+                      mimeType: record.type,
+                      uploadedAt: new Date().toISOString(),
+                    }],
+                  }
                 : entry),
             }));
             try {
@@ -1081,7 +1095,9 @@ export default function Home() {
               if (uploaded.ok) {
                 setSnapshot((current) => ({
                   ...current,
-                  resources: current.resources.map((entry) => entry.id === resourceId ? { ...entry, fileKey: uploaded.fileId } : entry),
+                  resources: current.resources.map((entry) => entry.id === resourceId
+                    ? { ...entry, files: resourceFiles(entry).map((file) => ({ ...file, fileKey: uploaded.fileId })) }
+                    : entry),
                 }));
               }
             } catch {
@@ -1506,7 +1522,7 @@ export default function Home() {
     agentRunningRef.current = true;
     setAgentRunning(true);
     // background = 主动性巡检：不阻塞用户输入，用户随时可以打断并开始自己的对话
-    if (options?.background) setAgentBackground(true);
+    if (options?.background) { setAgentBackground(true); agentBackgroundRef.current = true; }
     // 记录这一轮的图片，供 create_resource 工具把它存成资料原文件
     goalImagesRef.current = (goalImages ?? []).filter((url) => /^data:image\//i.test(url)).slice(0, 4);
     const assistantId = makeId("message");
@@ -1562,6 +1578,7 @@ export default function Home() {
       agentRunningRef.current = false;
       setAgentRunning(false);
       setAgentBackground(false);
+      agentBackgroundRef.current = false;
       // 上一轮结束后，自动发送排队中的用户消息（用户等待期间输入的内容不会被丢弃）
       const pending = queuedMessageRef.current;
       if (pending) {
@@ -1626,6 +1643,19 @@ export default function Home() {
     const timer = window.setTimeout(() => setComposerHint(""), 6000);
     return () => window.clearTimeout(timer);
   }, [composerHint]);
+
+  // 批量导入队列：这一批全部结束（已入库 / 失败 / 已取消）后，10 秒自动收起，不留常驻卡片
+  useEffect(() => {
+    if (!importQueue.length) return;
+    const allSettled = importQueue.every((item) => ["saved", "failed", "cancelled"].includes(item.status));
+    if (!allSettled) return;
+    const timer = window.setTimeout(() => {
+      setImportQueue((current) =>
+        current.every((item) => ["saved", "failed", "cancelled"].includes(item.status)) ? [] : current,
+      );
+    }, 10000);
+    return () => window.clearTimeout(timer);
+  }, [importQueue]);
 
   // 拖拽图片文件到输入区也能附加
   const handleComposerDrop = (event: React.DragEvent<HTMLElement>) => {
@@ -1972,8 +2002,9 @@ export default function Home() {
 
   const handleAttachments = async (files: File[]) => {
     if (!files.length) return;
-    // 浅浅正在处理消息时不去抢队列，但要明确告诉用户，不能静默丢弃文件
-    if (agentRunningRef.current) {
+    // 浅浅正在回应用户消息时不去抢队列，但要明确告诉用户，不能静默丢弃文件。
+    // 后台巡检不占用导入队列，所以它进行中也可以正常上传。
+    if (agentRunningRef.current && !agentBackgroundRef.current) {
       showComposerHint("浅浅正在处理上一条消息，等它回复完再上传文件。", "error");
       return;
     }
@@ -2073,10 +2104,13 @@ export default function Home() {
         tags: draft.tags,
         status: "未整理",
         importedAt: new Date().toISOString().slice(0, 10),
-        fileName: item.file.name,
-        fileId: fileRecord.id,
-        fileSize: fileRecord.size,
-        mimeType: fileRecord.type,
+        files: [{
+          fileId: fileRecord.id,
+          name: item.file.name,
+          size: fileRecord.size,
+          mimeType: fileRecord.type,
+          uploadedAt: new Date().toISOString(),
+        }],
         contentText: item.contentText?.slice(0, 20000) || undefined,
       };
       const task = item.includeTask && item.taskDraft
@@ -2096,7 +2130,9 @@ export default function Home() {
         setSnapshot((current) => ({
           ...current,
           resources: current.resources.map((entry) =>
-            entry.id === resourceId ? { ...entry, fileKey: uploaded.fileId } : entry,
+            entry.id === resourceId
+              ? { ...entry, files: resourceFiles(entry).map((file) => ({ ...file, fileKey: uploaded.fileId })) }
+              : entry,
           ),
         }));
         updateImportQueueItem(id, (current) => ({ ...current, backupState: "done" }));
@@ -2462,6 +2498,81 @@ export default function Home() {
     }
   };
 
+  // 给某份资料追加文件（资料预览里的「导入资料」走这里：文件挂到这份资料名下，而不是新建一条）
+  const attachFilesToResource = async (resourceId: string, files: File[]) => {
+    const accepted = files.slice(0, 10);
+    if (!accepted.length) return;
+    const added: ResourceFile[] = [];
+    for (const file of accepted) {
+      try {
+        const record = await saveLocalFile(resourceId, file);
+        const entry: ResourceFile = {
+          fileId: record.id,
+          name: file.name,
+          size: record.size,
+          mimeType: record.type,
+          uploadedAt: new Date().toISOString(),
+        };
+        added.push(entry);
+        // 上传服务端备份：换设备也能打开（失败不影响本机）
+        try {
+          const uploaded = await uploadFileToServer(file, file.name);
+          if (uploaded.ok) entry.fileKey = uploaded.fileId;
+        } catch {
+          // 忽略：本机仍可用
+        }
+        // 顺手抽取正文，让智能体之后能检索与讲解这些内容
+        try {
+          const text = await extractSearchableText(file);
+          if (text) {
+            setSnapshot((current) => ({
+              ...current,
+              resources: current.resources.map((item) => item.id === resourceId
+                ? {
+                    ...item,
+                    contentText: [item.contentText ?? "", `【${file.name}】\n${text}`].join("\n\n").trim().slice(0, 40000),
+                  }
+                : item),
+            }));
+          }
+        } catch {
+          // 抽不出正文也不影响文件本身
+        }
+      } catch {
+        // 这个文件存不下就跳过，继续处理下一个
+      }
+    }
+    if (!added.length) return;
+    setSnapshot((current) => ({
+      ...current,
+      resources: current.resources.map((item) => item.id === resourceId
+        ? { ...item, files: [...resourceFiles(item), ...added] }
+        : item),
+    }));
+    addAssistantMessage(`已把 ${added.length} 个文件挂到这份资料下。`);
+  };
+
+  // 删除资料下的某一个文件（不动资料本身）
+  const removeResourceFile = async (resourceId: string, index: number) => {
+    const target = snapshotRef.current.resources.find((item) => item.id === resourceId);
+    if (!target) return;
+    const list = resourceFiles(target);
+    const file = list[index];
+    if (!file) return;
+    if (file.fileId) {
+      try { await deleteLocalFile(file.fileId); } catch { /* 本机文件可能已被清理 */ }
+    }
+    if (file.fileKey) {
+      try { await fetch(`/api/files/${encodeURIComponent(file.fileKey)}`, { method: "DELETE" }); } catch { /* 服务端删除失败不阻塞 */ }
+    }
+    const next = list.filter((_, i) => i !== index);
+    setSnapshot((current) => ({
+      ...current,
+      resources: current.resources.map((item) => item.id === resourceId ? { ...item, files: next } : item),
+    }));
+    addAssistantMessage(`已删除文件「${file.name}」。`);
+  };
+
   // 删除资料：本地移除 + 删除原文件 + 上报云端（否则刷新会被同步回来）
   const deleteResource = async (resource: Resource) => {
     // 预设资料删掉后记一笔，避免下次登录又被补回来
@@ -2471,11 +2582,12 @@ export default function Home() {
       snapshotRef.current = next;
       return next;
     });
-    if (resource.fileId) {
-      try {
-        await deleteLocalFile(resource.fileId);
-      } catch {
-        // 文件已被清理时忽略
+    for (const file of resourceFiles(resource)) {
+      if (file.fileId) {
+        try { await deleteLocalFile(file.fileId); } catch { /* 文件已被清理时忽略 */ }
+      }
+      if (file.fileKey) {
+        try { await fetch(`/api/files/${encodeURIComponent(file.fileKey)}`, { method: "DELETE" }); } catch { /* 忽略 */ }
       }
     }
     void deleteCloud("resources", [resource.id]);
@@ -2790,6 +2902,8 @@ export default function Home() {
               onClearFinishedImports={clearFinishedImports}
               extractError={extractError}
               importInputRef={resourceImportInputRef}
+              onImportInto={(id, files) => void attachFilesToResource(id, files)}
+              onDeleteFile={(id, index) => void removeResourceFile(id, index)}
             />
           ) : null}
 
@@ -3396,6 +3510,7 @@ function TaskMini({ task, course }: { task: Task; course?: Course }) {
 function ResourcesView({
   resources, courseMap, courses, search, onSearch, showForm, setShowForm, title, setTitle, courseId, setCourseId, type, setType, onCreate, onDeleteResource, onReassignResource,
   onImportFiles, importQueue, batchRunning, onImportResourceChange, onImportTaskChange, onToggleImportTask, onConfirmImport, onCancelImport, onRetryImport, onManualImport, onRemoveImport, onClearFinishedImports, extractError, importInputRef,
+  onImportInto, onDeleteFile,
 }: {
   resources: Resource[];
   onImportFiles: (files: File[]) => void;
@@ -3412,6 +3527,10 @@ function ResourcesView({
   onClearFinishedImports: () => void;
   extractError: string;
   importInputRef: React.RefObject<HTMLInputElement | null>;
+  /** 给某份资料追加文件（预览里的「给这份资料加文件」） */
+  onImportInto: (resourceId: string, files: File[]) => void;
+  /** 删除某份资料下的一个文件 */
+  onDeleteFile: (resourceId: string, index: number) => void;
   onDeleteResource: (resource: Resource) => void;
   courseMap: Map<string, Course>;
   courses: Course[];
@@ -3511,18 +3630,18 @@ function ResourcesView({
               action={<button className="primary-button" onClick={() => importInputRef.current?.click()}>＋ 导入资料</button>}
             />
           : <EmptyState title="还没有匹配资料" copy="换个关键词，或点右上角「＋ 导入资料」把文件传进来。" />
-      ) : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} courses={courses} onReassign={onReassignResource} onImportFiles={() => importInputRef.current?.click()} /></div>
+      ) : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} courses={courses} onReassign={onReassignResource} onImportFiles={() => importInputRef.current?.click()} onImportInto={(picked) => selectedResource ? onImportInto(selectedResource.id, picked) : undefined} onDeleteFile={(index) => selectedResource ? onDeleteFile(selectedResource.id, index) : undefined} /></div>
   </div>;
 }
 
 function ResourceListItem({ resource, course, selected, onSelect }: { resource: Resource; course?: Course; selected: boolean; onSelect: () => void }) {
   // 只有真的存了原文件（本机 fileId 或服务端 fileKey）才显示文件名，避免显示并不存在的文件
-  const hasFile = Boolean(resource.fileId || resource.fileKey);
-  const fileLabel = hasFile ? (resource.fileName ?? "原文件") : "无原始文件";
+  const files = resourceFiles(resource);
+  const fileLabel = files.length > 1 ? `${files.length} 个文件` : files.length === 1 ? (files[0].name ?? "原文件") : "无原始文件";
   return <button className={`resource-item ${selected ? "selected" : ""}`} onClick={onSelect}><span className={`file-badge ${resource.type === "作业" ? "coral" : resource.type === "笔记" ? "blue" : ""}`}>{resource.type.slice(0, 1)}</span><span className="resource-main"><strong>{resource.title}</strong><small>{course?.name ?? "未分类"} · {fileLabel}</small><span className="tag-line">{resource.tags.map((tag) => <em key={tag}>{tag}</em>)}</span></span><span className="resource-status">{resource.status}</span><span className="chevron">›</span></button>;
 }
 
-function LocalResourcePreview({ resource, course, courses, onDelete, onReassign, onImportFiles }: { resource: Resource | null; course?: Course; courses?: Course[]; onDelete?: (resource: Resource) => void; onReassign?: (resourceId: string, courseId: string) => void; onImportFiles?: () => void }) {
+function LocalResourcePreview({ resource, course, courses, onDelete, onReassign, onImportFiles, onImportInto, onDeleteFile }: { resource: Resource | null; course?: Course; courses?: Course[]; onDelete?: (resource: Resource) => void; onReassign?: (resourceId: string, courseId: string) => void; onImportFiles?: () => void; onImportInto?: (files: File[]) => void; onDeleteFile?: (index: number) => void }) {
   // 载入结果整块存在一个 state 里，避免在 effect 里同步 setState（会触发级联渲染）；
   // 是否"加载中"由 fileId 与已载入结果推导得出。
   const [loaded, setLoaded] = useState<{
@@ -3532,8 +3651,14 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign,
     error: string;
   } | null>(null);
   const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const attachInputRef = useRef<HTMLInputElement>(null);
 
-  const fileId = resource?.fileId ?? null;
+  // 一份资料可以挂多个文件：预览当前选中的那个
+  const files = resource ? resourceFiles(resource) : [];
+  const safeIndex = Math.min(activeIndex, Math.max(0, files.length - 1));
+  const active = files[safeIndex] ?? null;
+  const fileId = active?.fileId ?? null;
 
   useEffect(() => {
     if (!fileId) return;
@@ -3562,7 +3687,7 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign,
   const loading = Boolean(fileId) && !ready;
 
   // 优先用本机原文件；本机没有但服务端有备份时，回退到服务端地址
-  const serverKey = resource?.fileKey ?? null;
+  const serverKey = active?.fileKey ?? null;
   const preview: LocalPreview | null = ready?.preview
     ?? (serverKey && resource ? previewFromServer(serverKey, resource) : null);
   const fileUrl = ready?.fileUrl ?? null;
@@ -3590,26 +3715,58 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign,
           </div>
         ) : null}
         <small className="preview-file-meta">
-          {hasFile ? <>文件：{resource.fileName ?? "原文件"}</> : "（无原始文件）"}
-          {hasFile && resource.fileSize ? ` · ${formatBytes(resource.fileSize)}` : ""}
+          {files.length ? `${files.length} 个文件` : "（无原始文件）"}
+          {files.length && active?.size ? ` · 当前 ${formatBytes(active.size)}` : ""}
           {resource.importedAt ? ` · 入库 ${resource.importedAt}` : ""}
         </small>
       </div>
+      {/* 顶部操作：给这份资料继续加文件，或者整份删掉 */}
+      <div className="preview-actions preview-actions-top">
+        <input
+          ref={attachInputRef}
+          data-testid="resource-attach-input"
+          type="file"
+          accept=".pdf,.doc,.docx,.ppt,.pptx,image/*"
+          multiple
+          hidden
+          onChange={(event) => {
+            const picked = Array.from(event.target.files ?? []);
+            if (picked.length && onImportInto) onImportInto(picked);
+            event.currentTarget.value = "";
+          }}
+        />
+        {onImportInto ? <button className="primary-button" onClick={() => attachInputRef.current?.click()}>＋ 给这份资料加文件</button> : null}
+        {onDelete ? (
+          confirmingDelete ? (
+            <>
+              <button className="quiet-button danger" onClick={() => { onDelete(resource); setConfirmingDelete(false); }}>确认删除</button>
+              <button className="text-button" onClick={() => setConfirmingDelete(false)}>取消</button>
+            </>
+          ) : (
+            <button className="text-button" onClick={() => setConfirmingDelete(true)}>删除资料</button>
+          )
+        ) : null}
+      </div>
+      {files.length ? (
+        <div className="resource-file-list" aria-label="这份资料的文件">
+          {files.map((file, index) => (
+            <div key={`${file.fileId ?? file.fileKey ?? "file"}-${index}`} className={`resource-file-row ${index === safeIndex ? "active" : ""}`}>
+              <button className="resource-file-main" onClick={() => setActiveIndex(index)} title="点击切换预览">
+                <span className="resource-file-name">{file.name || "原文件"}</span>
+                <small>{file.size ? formatBytes(file.size) : ""}{file.fileKey ? " · 已备份到服务端" : " · 仅本机"}</small>
+              </button>
+              {onDeleteFile ? (
+                <button className="text-button danger" onClick={() => onDeleteFile(index)} aria-label={`删除文件 ${file.name}`}>删除</button>
+              ) : null}
+            </div>
+          ))}
+        </div>
+      ) : null}
       {hasFile ? (
         <div className="preview-actions">
           <a className="quiet-button" href={openUrl ?? "#"} target="_blank" rel="noreferrer">打开原文件</a>
-          <a className="quiet-button" href={downloadUrl ?? "#"} download={resource.fileName ?? resource.title}>下载</a>
-          {!resource.fileId && serverKey ? <span className="preview-tag">来自服务端备份</span> : null}
-          {onDelete ? (
-            confirmingDelete ? (
-              <>
-                <button className="quiet-button danger" onClick={() => { onDelete(resource); setConfirmingDelete(false); }}>确认删除</button>
-                <button className="text-button" onClick={() => setConfirmingDelete(false)}>取消</button>
-              </>
-            ) : (
-              <button className="text-button" onClick={() => setConfirmingDelete(true)}>删除资料</button>
-            )
-          ) : null}
+          <a className="quiet-button" href={downloadUrl ?? "#"} download={active?.name ?? resource.title}>下载</a>
+          {active && !active.fileId && serverKey ? <span className="preview-tag">来自服务端备份</span> : null}
         </div>
       ) : null}
       {loading ? <div className="preview-loading"><span className="progress-spinner" />正在生成本地预览…</div> : null}
@@ -3617,21 +3774,8 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign,
       {!hasFile && !loading ? (
         <div className="preview-placeholder compact">
           <div className="paper-icon">▤</div>
-          <strong>这条资料没有原始文件</strong>
-          <span>点下面的「导入资料」把 PDF / Word / PPT / 图片传进来，就能在这里查看原件与正文；也可以在浅浅对话里把截图发给她，让她存成资料。</span>
-          {onImportFiles ? <div className="preview-actions"><button className="primary-button" onClick={onImportFiles}>＋ 导入资料</button></div> : null}
-          {onDelete ? (
-            confirmingDelete ? (
-              <div className="preview-actions">
-                <button className="quiet-button danger" onClick={() => { onDelete(resource); setConfirmingDelete(false); }}>确认删除</button>
-                <button className="text-button" onClick={() => setConfirmingDelete(false)}>取消</button>
-              </div>
-            ) : (
-              <div className="preview-actions">
-                <button className="text-button" onClick={() => setConfirmingDelete(true)}>删除这条资料</button>
-              </div>
-            )
-          ) : null}
+          <strong>这条资料还没有文件</strong>
+          <span>用上面的「＋ 给这份资料加文件」把 PDF / Word / PPT / 图片传进来（可以传多份）；也可以在浅浅对话里把截图发给她，让她存成资料。</span>
         </div>
       ) : null}
       {preview?.kind === "image" ? <img className="image-preview" src={preview.url} alt={resource.title} /> : null}
