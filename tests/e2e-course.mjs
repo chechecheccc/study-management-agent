@@ -1,6 +1,8 @@
 // 验证：我的课程顺序（新建课程 → 全部资料 → 具体课程）、新建课程、拖拽排序、改资料所属课程
 // 注意：两份「机器学习」预设课件会被固定在那门课（见 app/lib/presets.ts），
 //      所以这里改用示例资料来验证"改所属课程"。
+// 账号：用**临时账号**跑（新注册的账号会拿到示例数据），不要动 admin 的真实数据——
+//      这个用例会把资料改挂到新课程再删掉课程，用 admin 跑会在他的账号里留下"未分类"的孤儿资料。
 import { createRequire } from "node:module";
 import { cleanupTestAccounts } from "./lib/cleanup.mjs";
 const require = createRequire("file:///C:/Users/31045/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/node_modules/noop.js");
@@ -18,12 +20,14 @@ page.setDefaultTimeout(45000);
 try {
   await page.goto("http://localhost:3000/", { waitUntil: "load" });
   await page.waitForTimeout(3000);
-  const u = page.locator('input[aria-label="用户名"]');
-  if (await u.isVisible().catch(() => false)) {
-    await u.fill("admin");
-    await page.locator('input[aria-label="密码"]').fill("admin123");
-    await page.getByRole("button", { name: /^登录$/ }).click();
-  }
+  const RUN = Date.now().toString(36).slice(-5);
+  const USER = `courset${RUN}`;
+  const PASS = "course123456";
+  await page.getByRole("tab", { name: "注册" }).click();
+  await page.locator('input[aria-label="用户名"]').fill(USER);
+  await page.locator('input[aria-label="显示名称"]').fill("课程验收");
+  await page.locator('input[aria-label="密码"]').fill(PASS);
+  await page.getByRole("button", { name: /注册并进入/ }).click();
   await page.locator(".brand-name").waitFor({ state: "visible", timeout: 25000 });
   await page.waitForTimeout(1500);
   const skip = page.locator(".intro-skip");
@@ -124,8 +128,8 @@ try {
     await page2.waitForTimeout(3000);
     const u2 = page2.locator('input[aria-label="用户名"]');
     if (await u2.isVisible().catch(() => false)) {
-      await u2.fill("admin");
-      await page2.locator('input[aria-label="密码"]').fill("admin123");
+      await u2.fill(USER);
+      await page2.locator('input[aria-label="密码"]').fill(PASS);
       await page2.getByRole("button", { name: /^登录$/ }).click();
     }
     await page2.locator(".main-nav").waitFor({ state: "visible", timeout: 25000 });

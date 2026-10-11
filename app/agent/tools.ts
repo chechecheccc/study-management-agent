@@ -170,6 +170,25 @@ export const AGENT_TOOLS: ToolSpec[] = [
     requiresConfirmation: false,
   },
   {
+    name: "create_resource",
+    label: "添加资料",
+    description:
+      "把一份资料登记进资料库并归到某门课程下。用户把截图或照片发给你、并让你「保存成资料 / 存进某门课」时用它：默认把这一轮发来的图片一起存为原文件；只登记文字资料（手动卡片）时把 attachChatImage 设为 false。你在图片或文件里读到的文字与要点请写进 content，之后检索与讲解会用得上。课程不存在时先调用 create_course。调用后系统会向用户弹出确认卡片，确认后才真正写入。",
+    parameters: {
+      type: "object",
+      properties: {
+        title: { type: "string", description: "资料名称，例如「第 3 章 多元函数微分学（课件）」" },
+        courseName: { type: "string", description: "所属课程名；课程还没有时先调用 create_course" },
+        type: { type: "string", enum: ["课件", "作业", "笔记", "通知", "试卷", "其他"] },
+        tags: { type: "array", items: { type: "string" }, description: "资料标签（可选）" },
+        content: { type: "string", description: "资料正文或要点（可选）：把你从图片或文件里读到的文字写进来，供之后检索与讲解使用" },
+      },
+      required: ["title", "courseName", "type"],
+      additionalProperties: false,
+    },
+    requiresConfirmation: true,
+  },
+  {
     name: "read_resource",
     label: "阅读资料",
     description:

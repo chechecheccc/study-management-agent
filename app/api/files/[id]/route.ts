@@ -26,7 +26,12 @@ export async function GET(request: Request, context: { params: Promise<{ id: str
         .limit(1);
       return rows[0] ?? null;
     });
-    if (!row) return new Response("文件不存在或无权访问", { status: 404 });
+    if (!row) {
+      // 常见于：换机器部署后预设课件原件还没入库，或原文件尚未同步到服务端
+      return new Response("没有找到这份资料的原文件。若这是预设课件，请在项目目录执行 npm run db:seed:presets 写入原件；"
+        + "否则请在本机上重新上传该文件，或在有原文件的设备上打开以同步到服务端。",
+        { status: 404, headers: { "Content-Type": "text/plain; charset=utf-8" } });
+    }
 
     const download = new URL(request.url).searchParams.get("download") === "1";
     const body = new Uint8Array(row.data);

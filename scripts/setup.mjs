@@ -146,7 +146,7 @@ if (first.ok) {
   await second.client.end({ timeout: 3 }).catch(() => {});
 }
 
-const run = (label, args, extraEnv = {}) => {
+const run = (label, args, extraEnv = {}, optional = false) => {
   process.stdout.write(`… ${label}\n`);
   try {
     execFileSync(process.execPath, args, {
@@ -154,6 +154,10 @@ const run = (label, args, extraEnv = {}) => {
       env: { ...process.env, DATABASE_URL: databaseUrl, ...extraEnv },
     });
   } catch {
+    if (optional) {
+      console.warn(`! ${label} 没成功，但不影响其它功能（之后可以单独重跑）。`);
+      return;
+    }
     console.error(`✗ ${label} 失败`);
     process.exit(1);
   }
@@ -161,6 +165,8 @@ const run = (label, args, extraEnv = {}) => {
 
 run("建表（应用数据库迁移）", ["node_modules/drizzle-kit/bin.cjs", "migrate"]);
 run("初始化账号（admin / student1 / student2）", ["--experimental-strip-types", "scripts/seed-users.mjs"]);
+// 预设课件原件：写进数据库后，任何账号都能在资料页「打开原文件」
+run("写入预设课件原件", ["scripts/seed-preset-courseware.mjs"], {}, true);
 
 console.log([
   "",

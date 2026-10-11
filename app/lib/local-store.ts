@@ -381,6 +381,16 @@ export function emptySnapshot(): AppSnapshot {
   return { courses: [], resources: [], tasks: [] };
 }
 
+/**
+ * 清掉"没有原文件却写着文件名"的资料：早期演示数据里带着并不存在的文件名，
+ * 界面上会让人以为文件就在那儿。只有真的存了原文件（本机 fileId 或服务端 fileKey）才保留文件名。
+ */
+export function stripMissingFileNames(resources: Resource[]): Resource[] {
+  return resources.map((resource) =>
+    resource.fileId || resource.fileKey || !resource.fileName ? resource : { ...resource, fileName: undefined },
+  );
+}
+
 export function demoSnapshot(): AppSnapshot {
   return {
     courses: [
@@ -397,7 +407,6 @@ export function demoSnapshot(): AppSnapshot {
         tags: ["关系模型", "第一章"],
         status: "待复习",
         importedAt: "2026-08-01",
-        fileName: "数据库-第一章.pdf",
       },
       {
         id: "resource-2",
@@ -407,7 +416,6 @@ export function demoSnapshot(): AppSnapshot {
         tags: ["实验一", "DDL"],
         status: "未整理",
         importedAt: "2026-08-02",
-        fileName: "实验一要求.docx",
       },
       {
         id: "resource-3",
@@ -417,7 +425,6 @@ export function demoSnapshot(): AppSnapshot {
         tags: ["导数", "错题"],
         status: "学习中",
         importedAt: "2026-08-02",
-        fileName: "高数-导数笔记.pptx",
       },
       {
         id: "resource-4",
@@ -427,7 +434,6 @@ export function demoSnapshot(): AppSnapshot {
         tags: ["待确认"],
         status: "未整理",
         importedAt: "2026-08-03",
-        fileName: "Screenshot_0803.png",
       },
     ],
     tasks: [

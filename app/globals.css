@@ -588,6 +588,9 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 
 /* ---------- 资料预览操作区 ---------- */
 .preview-file-meta { display: block; margin-top: 5px; color: var(--muted); font-size: 10px; word-break: break-all; }
+/* 资料页右上角：导入资料 + 手动添加 并排 */
+.header-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.empty-action { margin-top: 12px; }
 .preview-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
 .preview-actions a.quiet-button { text-decoration: none; display: inline-flex; align-items: center; }
 

@@ -27,6 +27,7 @@ import {
   saveSnapshot,
   setDataScope,
   sortCourses,
+  stripMissingFileNames,
 } from "./lib/local-store";
 import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
@@ -109,6 +110,17 @@ type ChatMessage = {
 };
 
 /** 简单写入确认（删除任务、修改任务状态）：不需要编辑表单，只需一句话确认 */
+/** create_resource 的确认卡片草稿：用户可以在卡片里改标题、课程和类型 */
+type ResourceConfirmDraft = {
+  title: string;
+  courseId: string;
+  type: Resource["type"];
+  tags: string[];
+  content: string;
+  /** 这一轮会一起存进去的图片数量 */
+  attachImages: number;
+};
+
 type SimpleConfirm = {
   call: AgentToolCall;
   title: string;
@@ -257,6 +269,10 @@ export default function Home() {
   const [taskConfirmDraft, setTaskConfirmDraft] = useState<TaskConfirmDraft | null>(null);
   // 删除任务也是写入：单独一张确认卡片（之前漏了这条路径，导致模型的删除请求被当成“用户取消”）
   const [pendingSimpleConfirm, setPendingSimpleConfirm] = useState<SimpleConfirm | null>(null);
+  const [pendingResourceConfirm, setPendingResourceConfirm] = useState<AgentToolCall | null>(null);
+  const [resourceConfirmDraft, setResourceConfirmDraft] = useState<ResourceConfirmDraft | null>(null);
+  /** 本轮用户发来的图片：create_resource 工具会把它们一起存成资料原文件 */
+  const goalImagesRef = useRef<string[]>([]);
   const [pendingPlanConfirm, setPendingPlanConfirm] = useState<PlanConfirmState | null>(null);
   // 复习计划页：正在排 / 没排出来 的反馈，避免"点了没反应"
   const [reviewPlanStatus, setReviewPlanStatus] = useState<ReviewPlanStatus>({ state: "idle" });
@@ -270,6 +286,8 @@ export default function Home() {
   const pendingPlanConfirmRef = useRef<PlanConfirmState | null>(null);
   const [confirmError, setConfirmError] = useState("");
   const importInputRef = useRef<HTMLInputElement>(null);
+  // 资料页「导入资料」用的文件输入（与备份导入分开）
+  const resourceImportInputRef = useRef<HTMLInputElement>(null);
 
   const batchRunningRef = useRef(false);
   const agentRunningRef = useRef(false);
@@ -357,7 +375,7 @@ export default function Home() {
     );
   }, {
     scope: appRef,
-    dependencies: [view, Boolean(pendingTaskConfirm), Boolean(pendingSimpleConfirm), Boolean(pendingPlanConfirm), importQueue.length],
+    dependencies: [view, Boolean(pendingTaskConfirm), Boolean(pendingSimpleConfirm), Boolean(pendingResourceConfirm), Boolean(pendingPlanConfirm), importQueue.length],
   });
 
   // 只让"最新一条消息"播入场动画：历史消息不再重复播放，避免每次发送都满屏闪动
@@ -455,7 +473,9 @@ export default function Home() {
     setSyncState(cloudOk ? "idle" : "offline");
     if (!cloudOk) setSyncMessage("离线模式：数据保存在本机，联网后会自动同步。");
 
-    const next = merged.courses.length ? { ...merged, courses: normalizeCourseOrder(merged.courses) } : demoSnapshot();
+    const base = merged.courses.length ? { ...merged, courses: normalizeCourseOrder(merged.courses) } : demoSnapshot();
+    // 旧数据里可能留着并不存在的文件名，这里统一清掉，避免界面显示"高数有 pptx"这种误导
+    const next = { ...base, resources: stripMissingFileNames(base.resources) };
     // 登录/合并后的这一份就是"已知最新"，不要给它打新时间戳，否则会把其它设备刚改的数据顶掉
     syncedSnapshotRef.current = next;
     // 预设课程与预设课件：每个账号都补一份（用户删过的除外）。
@@ -497,6 +517,8 @@ export default function Home() {
     setPendingTaskConfirm(null);
     setTaskConfirmDraft(null);
     setPendingSimpleConfirm(null);
+    setPendingResourceConfirm(null);
+    setResourceConfirmDraft(null);
     setPendingPlanConfirm(null);
     setResourceCourse(withPresets.courses[0]?.id ?? "");
     setTaskCourse(withPresets.courses[0]?.id ?? "");
@@ -1004,7 +1026,86 @@ export default function Home() {
         if (!name) return { ok: false, summary: "缺少课程名称。" };
         const courseId = createCourse(name);
         if (!courseId) return { ok: false, summary: "课程名称不合法。" };
-        return { ok: true, summary: `已添加课程「${name}」`, data: { courseId, name } };
+        const existed = snap.courses.some((course) => course.id === courseId);
+        return {
+          ok: true,
+          summary: existed ? `课程「${name}」本来就有，直接用了它` : `已添加课程「${name}」`,
+          // totalCourses 供模型复核「课程确实建好了」
+          data: { courseId, name, existed, totalCourses: existed ? snap.courses.length : snap.courses.length + 1 },
+        };
+      }
+      case "create_resource": {
+        const title = asString(args.title).trim();
+        const courseId = resolveCourseId(asString(args.courseName));
+        const rawType = asString(args.type);
+        const type = (["课件", "作业", "笔记", "通知", "试卷", "其他"].includes(rawType) ? rawType : "其他") as Resource["type"];
+        if (!title) return { ok: false, summary: "缺少资料名称，未写入。" };
+        if (!courseId) {
+          return { ok: false, summary: `没有找到课程「${asString(args.courseName)}」，未写入。请先确认课程名，或先调用 create_course 新建课程。` };
+        }
+        const rawTags = Array.isArray(args.tags) ? (args.tags as unknown[]) : [];
+        const tags = rawTags.map((item) => asString(item).trim()).filter(Boolean).slice(0, 6);
+        const content = asString(args.content).trim().slice(0, 20000);
+        const images = goalImagesRef.current.filter((url) => /^data:image\//i.test(url)).slice(0, 4);
+        const resourceId = makeId("resource");
+        const resource: Resource = {
+          id: resourceId,
+          title,
+          courseId,
+          type,
+          tags: tags.length ? tags : [type],
+          status: "未整理",
+          importedAt: new Date().toISOString().slice(0, 10),
+          ...(content ? { contentText: content } : {}),
+        };
+        setSnapshot((current) => ({ ...current, resources: [resource, ...current.resources] }));
+        const courseLabel = courseNameOf(courseId);
+
+        // 用户这一轮发了图片：把它一起存成资料原文件（本机 + 尝试服务端备份）
+        let attached = 0;
+        if (images.length) {
+          try {
+            const blob = await (await fetch(images[0])).blob();
+            const ext = (blob.type.split("/")[1] || "png").replace("jpeg", "jpg");
+            const file = new File([blob], `${title}.${ext}`, { type: blob.type || "image/png" });
+            const record = await saveLocalFile(resourceId, file);
+            attached = 1;
+            setSnapshot((current) => ({
+              ...current,
+              resources: current.resources.map((entry) => entry.id === resourceId
+                ? { ...entry, fileName: file.name, fileId: record.id, fileSize: record.size, mimeType: record.type }
+                : entry),
+            }));
+            try {
+              const uploaded = await uploadFileToServer(file, file.name);
+              if (uploaded.ok) {
+                setSnapshot((current) => ({
+                  ...current,
+                  resources: current.resources.map((entry) => entry.id === resourceId ? { ...entry, fileKey: uploaded.fileId } : entry),
+                }));
+              }
+            } catch {
+              // 服务端备份失败不影响本机打开
+            }
+          } catch {
+            // 图片存不进去也不影响这条资料本身
+          }
+        }
+
+        return {
+          ok: true,
+          summary: `已把资料「${title}」添加进课程「${courseLabel}」`
+            + (attached ? "，并附带这一轮的图片作为原文件" : "")
+            + (content ? "，正文要点已保存" : ""),
+          data: {
+            resourceId,
+            title,
+            course: courseLabel,
+            attachedImages: attached,
+            hasContent: Boolean(content),
+            totalResources: snap.resources.length + 1,
+          },
+        };
       }
       case "read_resource": {
         const title = asString(args.title).trim();
@@ -1256,6 +1357,24 @@ export default function Home() {
         return;
       }
       // 删除 / 改状态这类“一句话就能确认”的写入，统一走简单确认卡片
+      if (call.name === "create_resource") {
+        const rawType = asString(call.arguments.type);
+        const type = (["课件", "作业", "笔记", "通知", "试卷", "其他"].includes(rawType) ? rawType : "其他") as Resource["type"];
+        const rawTags = Array.isArray(call.arguments.tags) ? (call.arguments.tags as unknown[]) : [];
+        const tags = rawTags.map((item) => asString(item).trim()).filter(Boolean).slice(0, 6);
+        setResourceConfirmDraft({
+          title: asString(call.arguments.title).trim() || "未命名资料",
+          courseId: resolveCourseId(asString(call.arguments.courseName)),
+          type,
+          tags: tags.length ? tags : [type],
+          content: asString(call.arguments.content).slice(0, 20000),
+          attachImages: goalImagesRef.current.length,
+        });
+        setConfirmError("");
+        setPendingResourceConfirm(call);
+        openConfirmation(resolve);
+        return;
+      }
       if (call.name === "delete_task" || call.name === "update_task_status") {
         const targetTitle = asString(call.arguments.taskTitle).trim();
         const snap = snapshotRef.current;
@@ -1353,6 +1472,25 @@ export default function Home() {
 
   const approveSimpleConfirm = () => settleConfirmation({ approved: true });
 
+  // 确认添加资料：把用户改过的字段回传，执行器据此写入
+  const approveResourceConfirm = () => {
+    if (!resourceConfirmDraft) return;
+    if (!resourceConfirmDraft.title.trim() || !resourceConfirmDraft.courseId) {
+      setConfirmError("请补充资料名称和所属课程后再确认。");
+      return;
+    }
+    settleConfirmation({
+      approved: true,
+      arguments: {
+        title: resourceConfirmDraft.title.trim(),
+        courseName: courseMap.get(resourceConfirmDraft.courseId)?.name ?? "",
+        type: resourceConfirmDraft.type,
+        tags: resourceConfirmDraft.tags,
+        content: resourceConfirmDraft.content,
+      },
+    });
+  };
+
   const rejectConfirm = () => settleConfirmation({ approved: false });
 
   const updateMessageSteps = (messageId: string, updater: (steps: ToolStep[]) => ToolStep[]) => {
@@ -1369,6 +1507,8 @@ export default function Home() {
     setAgentRunning(true);
     // background = 主动性巡检：不阻塞用户输入，用户随时可以打断并开始自己的对话
     if (options?.background) setAgentBackground(true);
+    // 记录这一轮的图片，供 create_resource 工具把它存成资料原文件
+    goalImagesRef.current = (goalImages ?? []).filter((url) => /^data:image\//i.test(url)).slice(0, 4);
     const assistantId = makeId("message");
     setMessages((current) => [...current, { id: assistantId, role: "assistant", text: "", steps: [] }]);
     let finalText = "";
@@ -2585,6 +2725,10 @@ export default function Home() {
               taskConfirmDraft={taskConfirmDraft}
               pendingSimpleConfirm={pendingSimpleConfirm}
               onApproveSimple={approveSimpleConfirm}
+              pendingResourceConfirm={pendingResourceConfirm}
+              resourceConfirmDraft={resourceConfirmDraft}
+              setResourceConfirmDraft={setResourceConfirmDraft}
+              onApproveResource={approveResourceConfirm}
               setTaskConfirmDraft={setTaskConfirmDraft}
               pendingPlanConfirm={pendingPlanConfirm}
               confirmError={confirmError}
@@ -2632,6 +2776,20 @@ export default function Home() {
               setType={setResourceType}
               onCreate={createResource}
               onReassignResource={reassignResource}
+              onImportFiles={handleAttachments}
+              importQueue={importQueue}
+              batchRunning={batchRunning}
+              onImportResourceChange={updateImportResource}
+              onImportTaskChange={updateImportTask}
+              onToggleImportTask={toggleImportTask}
+              onConfirmImport={(id) => void confirmImportItem(id)}
+              onCancelImport={cancelImportItem}
+              onRetryImport={(id) => void retryImportItem(id)}
+              onManualImport={useManualImportDraft}
+              onRemoveImport={removeImportItem}
+              onClearFinishedImports={clearFinishedImports}
+              extractError={extractError}
+              importInputRef={resourceImportInputRef}
             />
           ) : null}
 
@@ -2733,6 +2891,21 @@ export default function Home() {
         </div>
       </section>
     </main>
+    {view !== "assistant" && pendingResourceConfirm && resourceConfirmDraft ? (
+      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="浅浅请求添加资料">
+        <div className="action-card confirm-sheet">
+          <ResourceConfirmCard
+            draft={resourceConfirmDraft}
+            courses={snapshot.courses}
+            error={confirmError}
+            onApprove={approveResourceConfirm}
+            onReject={rejectConfirm}
+            onChange={(patch) => setResourceConfirmDraft((current) => current ? { ...current, ...patch } : current)}
+          />
+          <small className="confirm-hint">浅浅正在等你确认，确认前不会写入任何数据。</small>
+        </div>
+      </div>
+    ) : null}
     {view !== "assistant" && pendingSimpleConfirm ? (
       <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="浅浅请求写入">
         <div className="action-card confirm-sheet">
@@ -2808,6 +2981,10 @@ function AssistantView({
   setTaskConfirmDraft,
   pendingSimpleConfirm,
   onApproveSimple,
+  pendingResourceConfirm,
+  resourceConfirmDraft,
+  setResourceConfirmDraft,
+  onApproveResource,
   pendingPlanConfirm,
   confirmError,
   onApproveTask,
@@ -2860,6 +3037,10 @@ function AssistantView({
   pendingTaskConfirm: AgentToolCall | null;
   pendingSimpleConfirm: SimpleConfirm | null;
   onApproveSimple: () => void;
+  pendingResourceConfirm: AgentToolCall | null;
+  resourceConfirmDraft: ResourceConfirmDraft | null;
+  setResourceConfirmDraft: React.Dispatch<React.SetStateAction<ResourceConfirmDraft | null>>;
+  onApproveResource: () => void;
   taskConfirmDraft: TaskConfirmDraft | null;
   setTaskConfirmDraft: React.Dispatch<React.SetStateAction<TaskConfirmDraft | null>>;
   pendingPlanConfirm: PlanConfirmState | null;
@@ -2910,7 +3091,7 @@ function AssistantView({
     el.scrollTop = el.scrollHeight;
   }, [messages]);
   // 等待用户确认时不锁定输入：用户仍可浏览、打字，确认卡片在智能体页或兜底浮层里可见
-  const busy = (agentRunning && !agentBackground && !pendingTaskConfirm && !pendingSimpleConfirm && !pendingPlanConfirm) || batchRunning;
+  const busy = (agentRunning && !agentBackground && !pendingTaskConfirm && !pendingSimpleConfirm && !pendingResourceConfirm && !pendingPlanConfirm) || batchRunning;
   return (
     <div className="assistant-layout">
       <div className="assistant-column">
@@ -2965,6 +3146,18 @@ function AssistantView({
               </div>
             ))}
 
+            {pendingResourceConfirm && resourceConfirmDraft ? (
+              <div className="action-card gsap-action-card inline-confirm">
+                <ResourceConfirmCard
+                  draft={resourceConfirmDraft}
+                  courses={courses}
+                  error={confirmError}
+                  onApprove={onApproveResource}
+                  onReject={onRejectConfirm}
+                  onChange={(patch) => setResourceConfirmDraft((current) => current ? { ...current, ...patch } : current)}
+                />
+              </div>
+            ) : null}
             {pendingSimpleConfirm ? (
               <div className="action-card gsap-action-card inline-confirm">
                 <div className="action-label">浅浅请求写入 · {pendingSimpleConfirm.call.name === "delete_task" ? "删除任务" : "修改任务状态"}</div>
@@ -3110,6 +3303,61 @@ function AssistantView({
   );
 }
 
+function ResourceConfirmCard({
+  draft, courses, error, onApprove, onReject, onChange,
+}: {
+  draft: ResourceConfirmDraft;
+  courses: Course[];
+  error: string;
+  onApprove: () => void;
+  onReject: () => void;
+  onChange: (patch: Partial<ResourceConfirmDraft>) => void;
+}) {
+  return (
+    <>
+      <div className="action-label">浅浅请求写入 · 添加资料</div>
+      <input
+        className="action-title-input"
+        value={draft.title}
+        onChange={(event) => onChange({ title: event.target.value })}
+        aria-label="资料名称"
+      />
+      <div className="action-edit-grid">
+        <label>
+          <span>课程</span>
+          <select value={draft.courseId} onChange={(event) => onChange({ courseId: event.target.value })} aria-label="资料课程">
+            <option value="">请选择课程</option>
+            {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>类型</span>
+          <select value={draft.type} onChange={(event) => onChange({ type: event.target.value as Resource["type"] })} aria-label="资料类型">
+            {["课件", "作业", "笔记", "通知", "试卷", "其他"].map((item) => <option key={item}>{item}</option>)}
+          </select>
+        </label>
+        <label>
+          <span>标签</span>
+          <input
+            value={draft.tags.join("、")}
+            onChange={(event) => onChange({ tags: event.target.value.split(/[、,，\s]+/).filter(Boolean).slice(0, 6) })}
+            aria-label="资料标签"
+          />
+        </label>
+      </div>
+      {draft.content ? <small className="confirm-hint">正文要点 {draft.content.length} 字，会随资料一起保存，之后检索与讲解都会用到</small> : null}
+      <small className="confirm-hint">
+        {draft.attachImages ? `会把你在这一轮发的图片存为这份资料的原文件` : "这条资料只登记卡片，不带原文件"}
+      </small>
+      {error ? <div className="queue-error">{error}</div> : null}
+      <div className="action-buttons">
+        <button className="primary-button" onClick={onApprove}>确认并保存</button>
+        <button className="quiet-button" onClick={onReject}>取消</button>
+      </div>
+    </>
+  );
+}
+
 function PlanConfirmCard({ plan, error, onApprove, onReject }: { plan: PlanConfirmState; error: string; onApprove: () => void; onReject: () => void }) {
   return (
     <div className="action-card gsap-action-card">
@@ -3147,8 +3395,23 @@ function TaskMini({ task, course }: { task: Task; course?: Course }) {
 
 function ResourcesView({
   resources, courseMap, courses, search, onSearch, showForm, setShowForm, title, setTitle, courseId, setCourseId, type, setType, onCreate, onDeleteResource, onReassignResource,
+  onImportFiles, importQueue, batchRunning, onImportResourceChange, onImportTaskChange, onToggleImportTask, onConfirmImport, onCancelImport, onRetryImport, onManualImport, onRemoveImport, onClearFinishedImports, extractError, importInputRef,
 }: {
   resources: Resource[];
+  onImportFiles: (files: File[]) => void;
+  importQueue: ImportQueueItem[];
+  batchRunning: boolean;
+  onImportResourceChange: (id: string, patch: Partial<PendingResourceDraft>) => void;
+  onImportTaskChange: (id: string, patch: Partial<Task>) => void;
+  onToggleImportTask: (id: string, include: boolean) => void;
+  onConfirmImport: (id: string) => void;
+  onCancelImport: (id: string) => void;
+  onRetryImport: (id: string) => void;
+  onManualImport: (id: string) => void;
+  onRemoveImport: (id: string) => void;
+  onClearFinishedImports: () => void;
+  extractError: string;
+  importInputRef: React.RefObject<HTMLInputElement | null>;
   onDeleteResource: (resource: Resource) => void;
   courseMap: Map<string, Course>;
   courses: Course[];
@@ -3170,19 +3433,47 @@ function ResourcesView({
   const [statusFilter, setStatusFilter] = useState("");
   // 课程与状态筛选（搜索框由外层负责）
   const visible = resources.filter((resource) => {
-    if (courseFilter && resource.courseId !== courseFilter) return false;
+    // "未分类"：所属课程已被删除的资料，仍然要能找到并改归属
+    if (courseFilter === "__none__") {
+      if (courses.some((course) => course.id === resource.courseId)) return false;
+    } else if (courseFilter && resource.courseId !== courseFilter) {
+      return false;
+    }
     if (statusFilter && resource.status !== statusFilter) return false;
     return true;
   });
+  const orphanCount = resources.filter((resource) => !courses.some((course) => course.id === resource.courseId)).length;
   const selectedResource = visible.find((resource) => resource.id === selectedId) ?? visible[0] ?? null;
+  // 从侧栏点课程进来时，搜索词就是课程名：空状态要能说清「这门课还没有资料」
+  const keyword = search.trim();
+  const courseNameHint = keyword
+    ? (courses.find((course) => course.name === keyword)?.name ?? "")
+    : (courseFilter ? (courses.find((course) => course.id === courseFilter)?.name ?? "") : "");
 
-  return <div className="page-view"><PageHeader eyebrow="LIBRARY" title="课程资料库" description="让每份资料有位置，也有下一步。" action={<button className="primary-button" onClick={() => setShowForm(!showForm)}>＋ 添加资料</button>} />
+  return <div className="page-view"><PageHeader eyebrow="LIBRARY" title="课程资料库" description="让每份资料有位置，也有下一步。" action={<div className="header-actions">
+      <input
+        ref={importInputRef}
+        data-testid="resource-import-input"
+        type="file"
+        accept=".pdf,.doc,.docx,.ppt,.pptx,image/*"
+        multiple
+        hidden
+        onChange={(event) => {
+          const files = Array.from(event.target.files ?? []);
+          if (files.length) onImportFiles(files);
+          event.currentTarget.value = "";
+        }}
+      />
+      <button className="primary-button" onClick={() => importInputRef.current?.click()} disabled={batchRunning}>＋ 导入资料</button>
+      <button className="quiet-button" onClick={() => setShowForm(!showForm)}>＋ 手动添加</button>
+    </div>} />
     {showForm ? <div className="inline-form"><div className="form-title">新建资料卡片 <span>若要保存原文件并自动识别，请在浅浅页面点击“＋”上传</span></div><div className="form-grid"><input value={title} onChange={(event) => setTitle(event.target.value)} placeholder="资料名称" /><select value={courseId} onChange={(event) => setCourseId(event.target.value)}>{courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}</select><select value={type} onChange={(event) => setType(event.target.value as Resource["type"])}><option>课件</option><option>作业</option><option>笔记</option><option>通知</option><option>试卷</option><option>其他</option></select><button className="primary-button" onClick={onCreate}>保存资料</button></div></div> : null}
     <div className="toolbar">
       <label className="local-search"><span>⌕</span><input value={search} onChange={(event) => onSearch(event.target.value)} placeholder="搜索标题、课程、标签" /></label>
       <select value={courseFilter} onChange={(event) => setCourseFilter(event.target.value)} aria-label="按课程筛选资料">
         <option value="">全部课程</option>
         {courses.map((course) => <option key={course.id} value={course.id}>{course.name}</option>)}
+        {orphanCount ? <option value="__none__">未分类（{orphanCount}）</option> : null}
       </select>
       <select value={statusFilter} onChange={(event) => setStatusFilter(event.target.value)} aria-label="按状态筛选资料">
         <option value="">全部状态</option>
@@ -3193,15 +3484,45 @@ function ResourcesView({
       </select>
       {(courseFilter || statusFilter) ? <button className="text-button" onClick={() => { setCourseFilter(""); setStatusFilter(""); }}>清除筛选</button> : null}
     </div>
-    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{visible.length} 份资料 <span>· 本地索引</span></div>{visible.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{visible.length === 0 ? <EmptyState title="还没有匹配资料" copy="试试换个关键词，或手动添加一张资料卡片。" /> : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} courses={courses} onReassign={onReassignResource} /></div>
+    {importQueue.length ? (
+      <div className="gsap-queue-wrap">
+        <BatchImportQueue
+          items={importQueue}
+          courses={courses}
+          running={batchRunning}
+          onResourceChange={onImportResourceChange}
+          onTaskChange={onImportTaskChange}
+          onToggleTask={onToggleImportTask}
+          onConfirm={onConfirmImport}
+          onCancel={onCancelImport}
+          onRetry={onRetryImport}
+          onManual={onManualImport}
+          onRemove={onRemoveImport}
+          onClearFinished={onClearFinishedImports}
+        />
+        {extractError ? <div className="extract-error">{extractError}</div> : null}
+      </div>
+    ) : null}
+    <div className="resource-layout"><div className="resource-list"><div className="list-meta">{visible.length} 份资料 <span>· 本地索引</span></div>{visible.map((resource) => <ResourceListItem key={resource.id} resource={resource} course={courseMap.get(resource.courseId)} selected={selectedResource?.id === resource.id} onSelect={() => setSelectedId(resource.id)} />)}{visible.length === 0 ? (
+        courseNameHint
+          ? <EmptyState
+              title={`「${courseNameHint}」还没有资料`}
+              copy="点右上角「＋ 导入资料」把课件、讲义、通知截图或笔记传进来；也可以先「＋ 手动添加」一张资料卡片。"
+              action={<button className="primary-button" onClick={() => importInputRef.current?.click()}>＋ 导入资料</button>}
+            />
+          : <EmptyState title="还没有匹配资料" copy="换个关键词，或点右上角「＋ 导入资料」把文件传进来。" />
+      ) : null}</div><LocalResourcePreview key={`${selectedResource?.id ?? "empty"}-${selectedResource?.fileId ?? "none"}`} resource={selectedResource} course={selectedResource ? courseMap.get(selectedResource.courseId) : undefined} onDelete={onDeleteResource} courses={courses} onReassign={onReassignResource} onImportFiles={() => importInputRef.current?.click()} /></div>
   </div>;
 }
 
 function ResourceListItem({ resource, course, selected, onSelect }: { resource: Resource; course?: Course; selected: boolean; onSelect: () => void }) {
-  return <button className={`resource-item ${selected ? "selected" : ""}`} onClick={onSelect}><span className={`file-badge ${resource.type === "作业" ? "coral" : resource.type === "笔记" ? "blue" : ""}`}>{resource.type.slice(0, 1)}</span><span className="resource-main"><strong>{resource.title}</strong><small>{course?.name ?? "未分类"} · {resource.fileName ?? "手动资料卡片"}</small><span className="tag-line">{resource.tags.map((tag) => <em key={tag}>{tag}</em>)}</span></span><span className="resource-status">{resource.status}</span><span className="chevron">›</span></button>;
+  // 只有真的存了原文件（本机 fileId 或服务端 fileKey）才显示文件名，避免显示并不存在的文件
+  const hasFile = Boolean(resource.fileId || resource.fileKey);
+  const fileLabel = hasFile ? (resource.fileName ?? "原文件") : "无原始文件";
+  return <button className={`resource-item ${selected ? "selected" : ""}`} onClick={onSelect}><span className={`file-badge ${resource.type === "作业" ? "coral" : resource.type === "笔记" ? "blue" : ""}`}>{resource.type.slice(0, 1)}</span><span className="resource-main"><strong>{resource.title}</strong><small>{course?.name ?? "未分类"} · {fileLabel}</small><span className="tag-line">{resource.tags.map((tag) => <em key={tag}>{tag}</em>)}</span></span><span className="resource-status">{resource.status}</span><span className="chevron">›</span></button>;
 }
 
-function LocalResourcePreview({ resource, course, courses, onDelete, onReassign }: { resource: Resource | null; course?: Course; courses?: Course[]; onDelete?: (resource: Resource) => void; onReassign?: (resourceId: string, courseId: string) => void }) {
+function LocalResourcePreview({ resource, course, courses, onDelete, onReassign, onImportFiles }: { resource: Resource | null; course?: Course; courses?: Course[]; onDelete?: (resource: Resource) => void; onReassign?: (resourceId: string, courseId: string) => void; onImportFiles?: () => void }) {
   // 载入结果整块存在一个 state 里，避免在 effect 里同步 setState（会触发级联渲染）；
   // 是否"加载中"由 fileId 与已载入结果推导得出。
   const [loaded, setLoaded] = useState<{
@@ -3251,7 +3572,7 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign 
   const hasFile = Boolean(openUrl);
 
   if (!resource) {
-    return <div className="preview-panel"><div className="preview-top"><span>资料预览</span><span className="preview-tag">预览</span></div><div className="preview-placeholder"><div className="paper-icon">▤</div><strong>选择一份资料</strong><span>原始文件、课程标签和学习状态会显示在这里。</span></div></div>;
+    return <div className="preview-panel"><div className="preview-top"><span>资料预览</span><span className="preview-tag">预览</span></div><div className="preview-placeholder"><div className="paper-icon">▤</div><strong>还没有可以预览的资料</strong><span>把课件、讲义、通知截图或笔记导入进来，原件、正文与标签会显示在这里。</span>{onImportFiles ? <div className="preview-actions"><button className="primary-button" onClick={onImportFiles}>＋ 导入资料</button></div> : null}</div></div>;
   }
 
   return (
@@ -3269,8 +3590,8 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign 
           </div>
         ) : null}
         <small className="preview-file-meta">
-          {resource.fileName ? <>文件：{resource.fileName}</> : "（无原始文件）"}
-          {resource.fileSize ? ` · ${formatBytes(resource.fileSize)}` : ""}
+          {hasFile ? <>文件：{resource.fileName ?? "原文件"}</> : "（无原始文件）"}
+          {hasFile && resource.fileSize ? ` · ${formatBytes(resource.fileSize)}` : ""}
           {resource.importedAt ? ` · 入库 ${resource.importedAt}` : ""}
         </small>
       </div>
@@ -3296,8 +3617,9 @@ function LocalResourcePreview({ resource, course, courses, onDelete, onReassign 
       {!hasFile && !loading ? (
         <div className="preview-placeholder compact">
           <div className="paper-icon">▤</div>
-          <strong>{resource.tags.includes("待整理") ? "示例资料卡片" : "这条资料没有原始文件"}</strong>
-          <span>通过输入框右侧的「＋」上传 PDF / Word / PPT / 截图后，就能在这里查看原件与正文。</span>
+          <strong>这条资料没有原始文件</strong>
+          <span>点下面的「导入资料」把 PDF / Word / PPT / 图片传进来，就能在这里查看原件与正文；也可以在浅浅对话里把截图发给她，让她存成资料。</span>
+          {onImportFiles ? <div className="preview-actions"><button className="primary-button" onClick={onImportFiles}>＋ 导入资料</button></div> : null}
           {onDelete ? (
             confirmingDelete ? (
               <div className="preview-actions">
@@ -4493,7 +4815,7 @@ function formatBytes(size: number) {
 
 function PageHeader({ eyebrow, title, description, action }: { eyebrow: string; title: string; description: string; action?: React.ReactNode }) { return <div className="page-header"><div><div className="eyebrow">{eyebrow}</div><h1>{title}</h1><p>{description}</p></div>{action ? <div className="page-header-action">{action}</div> : null}</div>; }
 
-function EmptyState({ title, copy }: { title: string; copy: string }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span></div>; }
+function EmptyState({ title, copy, action }: { title: string; copy: string; action?: React.ReactNode }) { return <div className="empty-state"><div className="empty-symbol">＋</div><strong>{title}</strong><span>{copy}</span>{action ? <div className="empty-action">{action}</div> : null}</div>; }
 
 
 

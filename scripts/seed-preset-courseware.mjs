@@ -2,7 +2,7 @@
 //
 // 用法：
 //   node scripts/seed-preset-courseware.mjs [第1章.pdf] [第2章.pdf]
-//   不带参数时用默认路径（桌面上的两份教材）。
+//   不带参数时用仓库内自带的原件（assets/preset-courseware/）。
 //
 // 说明：应用跑在 Workers 运行时，没有文件系统，所以文件本体存 PostgreSQL 的 bytea。
 // 预设文件用固定的 file id + 保留的 userId（__preset__），任何登录用户都能通过
@@ -11,9 +11,12 @@ import fs from "node:fs";
 import path from "node:path";
 import postgres from "postgres";
 
+// 原件随仓库分发（assets/preset-courseware/），这样别人部署后也能打开"打开原文件"；
+// 也可以用命令行参数换成自己的文件。
+const here = path.dirname(new URL(import.meta.url).pathname.replace(/^\/([A-Za-z]:)/, "$1"));
 const DEFAULTS = [
-  { id: "file-preset-ml-ch1", file: "C:/Users/31045/Desktop/第1章-引言.pdf" },
-  { id: "file-preset-ml-ch2", file: "C:/Users/31045/Desktop/第2章  连续最优化建模与应用.pdf.pdf" },
+  { id: "file-preset-ml-ch1", file: path.join(here, "..", "assets", "preset-courseware", "第1章-引言.pdf") },
+  { id: "file-preset-ml-ch2", file: path.join(here, "..", "assets", "preset-courseware", "第2章-连续最优化建模与应用.pdf") },
 ];
 
 function readDatabaseUrl() {
