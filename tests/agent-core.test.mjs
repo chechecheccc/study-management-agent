@@ -356,6 +356,39 @@ test("测试账号识别：测试前缀能认出，真人账号不误判", () =>
   }
 });
 
+test("工具调用缺参数：不弹确认卡片，而是要求模型重新调用", async () => {
+  // 模型偶尔会返回 arguments 为空的工具调用；如果直接弹卡片，用户会看到一张空卡片、点确认没反应。
+  let confirmAsked = false;
+  const events = await collect(runAgentLoop({
+    goal: "帮我记下：数据库系统 后天晚上 8 点交实验报告",
+    history: [],
+    step: async () => ({ type: "tool_calls", content: "", calls: [{ id: "c1", name: "create_task", arguments: {} }] }),
+    execute: async () => { throw new Error("缺参数时不应该执行工具"); },
+    requestConfirmation: async () => { confirmAsked = true; return { approved: true }; },
+    maxSteps: 1,
+  }));
+  assert.equal(confirmAsked, false, "缺参数时不应该让用户确认");
+  const result = events.find((event) => event.type === "tool_result");
+  assert.ok(result, "应该有工具结果事件");
+  assert.equal(result.result.ok, false);
+  assert.match(result.result.summary, /缺少必要参数/);
+  assert.match(result.result.summary, /title/);
+});
+
+test("工具调用参数不全：只缺一个也拦下来", async () => {
+  const events = await collect(runAgentLoop({
+    goal: "记一下",
+    history: [],
+    step: async () => ({ type: "tool_calls", content: "", calls: [{ id: "c1", name: "create_resource", arguments: { title: "板书", courseName: "  ", type: "笔记" } }] }),
+    execute: async () => { throw new Error("不应该执行"); },
+    requestConfirmation: noopConfirm,
+    maxSteps: 1,
+  }));
+  const result = events.find((event) => event.type === "tool_result");
+  assert.equal(result.result.ok, false);
+  assert.match(result.result.summary, /courseName/);
+});
+
 test("提醒规则解析：提前3天、1天、2小时", () => {
   assert.deepEqual(parseReminderOffsets("提前3天、1天、2小时"), [4320, 1440, 120]);
   assert.deepEqual(parseReminderOffsets("提前2小时"), [120]);

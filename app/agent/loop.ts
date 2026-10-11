@@ -7,6 +7,7 @@
 import type { AgentStepResponse, AgentToolCall, AgentWireContent, AgentWireMessage } from "./protocol.ts";
 import { MAX_TOOL_RESULT_CHARS } from "./protocol.ts";
 import { getToolSpec } from "./tools.ts";
+import type { ToolSpec } from "./tools.ts";
 
 export type HistoryMessage = {
   role: "user" | "assistant";
@@ -120,6 +121,20 @@ export async function* runAgentLoop(deps: AgentLoopDeps): AsyncGenerator<LoopEve
         continue;
       }
 
+      // 护栏：模型偶尔会返回"参数为空"的工具调用（arguments 是 {} 或被截断）。
+      // 如果直接弹确认卡片，用户会看到一张空卡片、点确认也没反应；
+      // 这里改成把"缺少参数"回灌给模型，让它重新调用一次。
+      const missing = missingRequiredArgs(spec, call.arguments);
+      if (missing.length) {
+        const result: ToolExecutionResult = {
+          ok: false,
+          summary: `这次「${spec.label}」调用缺少必要参数：${missing.join("、")}。请重新调用一次，把参数补完整。`,
+        };
+        pushToolResult(messages, call, result);
+        yield { type: "tool_result", call, result, confirmed: null };
+        continue;
+      }
+
       if (spec.requiresConfirmation) {
         yield { type: "confirmation", call };
         let decision: ConfirmationDecision;
@@ -188,6 +203,20 @@ function pushToolResult(messages: AgentWireMessage[], call: AgentToolCall, resul
     role: "tool",
     tool_call_id: call.id,
     content: payload.slice(0, MAX_TOOL_RESULT_CHARS),
+  });
+}
+
+/** 按工具 schema 里的 required 检查必要参数是否为空；返回缺失的字段名 */
+export function missingRequiredArgs(spec: ToolSpec, args: Record<string, unknown>): string[] {
+  const required = (spec.parameters as { required?: unknown }).required;
+  if (!Array.isArray(required)) return [];
+  return required.filter((key) => {
+    if (typeof key !== "string") return false;
+    const value = args[key];
+    if (value === undefined || value === null) return true;
+    if (typeof value === "string") return value.trim().length === 0;
+    if (Array.isArray(value)) return value.length === 0;
+    return false;
   });
 }
 
