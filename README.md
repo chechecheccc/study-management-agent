@@ -143,7 +143,7 @@ D:\pgsql\bin\pg_ctl.exe -D D:\pgsql\data -l D:\pgsql\log.txt start
 
 1. 你的机器上打开 `D:\ruanjian\postgresql\data\pg_hba.conf`，末尾加一行：`host all all 0.0.0.0/0 scram-sha-256`
 2. 重启 PostgreSQL 服务；Windows 防火墙放行 5432 端口
-3. 对方：`DATABASE_URL=postgresql://qianqian:qianqian123@你的局域网IP:5432/qianqian`
+3. 对方：`DATABASE_URL=postgresql://qianqian:你的密码@你的局域网IP:5432/qianqian`
 
 > ⚠️ 这等于把数据库对局域网开放，仅在可信网络里用；用完建议把那行注释掉。
 
