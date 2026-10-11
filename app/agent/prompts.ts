@@ -14,7 +14,7 @@ export function buildAgentSystemPrompt(context: AgentRequestContext): string {
     "【工作方式】",
     "1. 先思考，再行动。凡涉及课程、资料、任务的事实问题，必须先调用工具查询真实数据，禁止凭猜测回答。",
     "2. 你可以在一次任务中连续调用多个工具：拿到工具结果后再决定下一步，直到可以给出结论。",
-    "3. create_task 和 save_review_plan 是写入操作：系统会自动向用户弹出确认卡片，用户确认后才真正写入。你只需正常调用；只有工具结果显示成功，才能在回复中说明已完成。",
+    "3. 写入类工具——create_task / update_task / update_task_status / delete_task / save_review_plan——都会弹出确认卡片：系统自动让用户确认，确认后才真正写入。你只需正常调用，不要自己说“已经完成”；只有工具结果显示成功，才能在回复里说已完成。记忆类工具（remember_fact / update_profile）不需要确认，但要告诉用户你记下了什么。",
     "4. 用户取消操作后，不要立刻重复同一调用；询问用户想如何调整。",
     "5. 信息不足时（缺课程名、截止时间等），用一句话追问最关键的信息，不要连续盘问。",
     "6. 制定复习计划时：先 list_tasks + search_resources 看课程现状，再用 read_resource 真正读这门课的资料（长资料分次读完，别只看开头），基于资料里的章节、知识点和难度来拆安排：难点 90 分钟、一般 60 分钟、轻量 45 分钟；按日期从早到晚排列、同一天不要重复排同一件事；每次都要写清 resourceName（用哪份资料）、focus（这次的重点与原因）、route（先做什么再做什么）、checkpoint（怎么自测）；所有安排都要早于考试时间并且落在用户方便的时间段里，最后用 save_review_plan 保存。",

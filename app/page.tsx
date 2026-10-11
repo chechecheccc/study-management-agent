@@ -30,7 +30,7 @@ import {
 } from "./lib/local-store";
 import type { ChatLogRecord, ConversationRecord } from "./lib/local-store";
 import { deriveConversationTitle, formatConversationStamp, groupConversationsByDate } from "./agent/conversations";
-import { deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, serverFileUrl, touchSnapshot, uploadFileToServer } from "./lib/cloud-sync";
+import { applyDeletions, deleteCloud, mergeCloud, mergeConversations, pullCloud, pushCloud, serverFileUrl, touchSnapshot, uploadFileToServer } from "./lib/cloud-sync";
 import {
   buildReminderText,
   deriveTaskStatus,
@@ -108,6 +108,14 @@ type ChatMessage = {
   images?: string[];
 };
 
+/** 简单写入确认（删除任务、修改任务状态）：不需要编辑表单，只需一句话确认 */
+type SimpleConfirm = {
+  call: AgentToolCall;
+  title: string;
+  note: string;
+  confirmLabel: string;
+  danger: boolean;
+};
 type TaskConfirmDraft = {
   title: string;
   courseId: string;
@@ -245,7 +253,10 @@ export default function Home() {
   const [profile, setProfile] = useState<UserProfile>({ name: "", studyTime: "", goal: "", notes: [] });
   const [pendingTaskConfirm, setPendingTaskConfirm] = useState<AgentToolCall | null>(null);
   const pendingTaskConfirmRef = useRef<AgentToolCall | null>(null);
+  const pendingSimpleConfirmRef = useRef<SimpleConfirm | null>(null);
   const [taskConfirmDraft, setTaskConfirmDraft] = useState<TaskConfirmDraft | null>(null);
+  // 删除任务也是写入：单独一张确认卡片（之前漏了这条路径，导致模型的删除请求被当成“用户取消”）
+  const [pendingSimpleConfirm, setPendingSimpleConfirm] = useState<SimpleConfirm | null>(null);
   const [pendingPlanConfirm, setPendingPlanConfirm] = useState<PlanConfirmState | null>(null);
   // 复习计划页：正在排 / 没排出来 的反馈，避免"点了没反应"
   const [reviewPlanStatus, setReviewPlanStatus] = useState<ReviewPlanStatus>({ state: "idle" });
@@ -346,7 +357,7 @@ export default function Home() {
     );
   }, {
     scope: appRef,
-    dependencies: [view, Boolean(pendingTaskConfirm), Boolean(pendingPlanConfirm), importQueue.length],
+    dependencies: [view, Boolean(pendingTaskConfirm), Boolean(pendingSimpleConfirm), Boolean(pendingPlanConfirm), importQueue.length],
   });
 
   // 只让"最新一条消息"播入场动画：历史消息不再重复播放，避免每次发送都满屏闪动
@@ -416,9 +427,15 @@ export default function Home() {
       const pulled = await pullCloud();
       if (pulled.ok) {
         cloudOk = true;
-        const result = mergeCloud(stored, pulled.data);
+        // 服务端已经删掉的记录：本地旧副本也要跟着消失，否则会被重新推上去
+        const aliveStored = {
+          courses: applyDeletions(stored.courses, pulled.data.deletions, "courses"),
+          resources: applyDeletions(stored.resources, pulled.data.deletions, "resources"),
+          tasks: applyDeletions(stored.tasks, pulled.data.deletions, "tasks"),
+        };
+        const result = mergeCloud(aliveStored, pulled.data);
         merged = result.snapshot;
-        mergedConversations = mergeConversations(savedConversations, pulled.data.conversations);
+        mergedConversations = mergeConversations(applyDeletions(savedConversations, pulled.data.deletions, "conversations"), pulled.data.conversations);
         if (pulled.data.profile?.name || pulled.data.profile?.notes?.length) {
           mergedProfile = { ...mergedProfile, ...pulled.data.profile };
         }
@@ -479,6 +496,7 @@ export default function Home() {
     reviewTargetCourseRef.current = "";
     setPendingTaskConfirm(null);
     setTaskConfirmDraft(null);
+    setPendingSimpleConfirm(null);
     setPendingPlanConfirm(null);
     setResourceCourse(withPresets.courses[0]?.id ?? "");
     setTaskCourse(withPresets.courses[0]?.id ?? "");
@@ -600,6 +618,22 @@ export default function Home() {
     }
   };
 
+  // 修改自己的密码（普通用户也能用）
+  const changeOwnPassword = async (current: string, next: string): Promise<string | null> => {
+    try {
+      const response = await fetch("/api/auth/password", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ currentPassword: current, newPassword: next }),
+      });
+      const body = (await response.json()) as { ok?: boolean; error?: { message?: string } };
+      if (!response.ok || !body.ok) return body.error?.message ?? "修改失败，请稍后重试。";
+      return null;
+    } catch {
+      return "无法连接服务端。";
+    }
+  };
+
   const logout = async () => {
     // 先停用持久化（ready=false），再清空账号作用域，避免登出瞬间把数据写进默认命名空间
     setReady(false);
@@ -627,6 +661,10 @@ export default function Home() {
   useEffect(() => {
     pendingTaskConfirmRef.current = pendingTaskConfirm;
   }, [pendingTaskConfirm]);
+
+  useEffect(() => {
+    pendingSimpleConfirmRef.current = pendingSimpleConfirm;
+  }, [pendingSimpleConfirm]);
 
   useEffect(() => {
     conversationsRef.current = conversations;
@@ -1217,6 +1255,28 @@ export default function Home() {
         openConfirmation(resolve);
         return;
       }
+      // 删除 / 改状态这类“一句话就能确认”的写入，统一走简单确认卡片
+      if (call.name === "delete_task" || call.name === "update_task_status") {
+        const targetTitle = asString(call.arguments.taskTitle).trim();
+        const snap = snapshotRef.current;
+        const target =
+          snap.tasks.find((candidate) => candidate.title === targetTitle) ??
+          snap.tasks.find((candidate) => candidate.title.includes(targetTitle) || (targetTitle && targetTitle.includes(candidate.title)));
+        // 找不到任务时直接放行，让执行器返回明确的失败信息
+        if (!target) {
+          resolve({ approved: true });
+          return;
+        }
+        const nextStatus = asString(call.arguments.status).trim();
+        setPendingSimpleConfirm(
+          call.name === "delete_task"
+            ? { call: { ...call, arguments: { ...call.arguments, taskTitle: target.title } }, title: target.title, note: "删除后这条任务会从任务中心消失，不能恢复。", confirmLabel: "确认删除", danger: true }
+            : { call: { ...call, arguments: { ...call.arguments, taskTitle: target.title } }, title: target.title, note: "把状态改成「" + (nextStatus || "已完成") + "」", confirmLabel: "确认修改", danger: false },
+        );
+        setConfirmError("");
+        openConfirmation(resolve);
+        return;
+      }
       if (call.name === "save_review_plan") {
         reviewPlanArrivedRunRef.current = reviewRunIdRef.current;
         const plannedCourseId = resolveCourseId(asString(call.arguments.courseName)) || reviewTargetCourseRef.current;
@@ -1290,6 +1350,8 @@ export default function Home() {
       arguments: { courseName: pendingPlanConfirm.courseName, sessions: pendingPlanConfirm.sessions },
     });
   };
+
+  const approveSimpleConfirm = () => settleConfirmation({ approved: true });
 
   const rejectConfirm = () => settleConfirmation({ approved: false });
 
@@ -2521,6 +2583,8 @@ export default function Home() {
               onDropImage={handleComposerDrop}
               pendingTaskConfirm={pendingTaskConfirm}
               taskConfirmDraft={taskConfirmDraft}
+              pendingSimpleConfirm={pendingSimpleConfirm}
+              onApproveSimple={approveSimpleConfirm}
               setTaskConfirmDraft={setTaskConfirmDraft}
               pendingPlanConfirm={pendingPlanConfirm}
               confirmError={confirmError}
@@ -2662,12 +2726,24 @@ export default function Home() {
               onTestLlm={testLlmConnection}
               onToggleAnimations={toggleAnimations}
               onLogout={logout}
+              onChangePassword={changeOwnPassword}
               inputRef={importInputRef}
             />
           ) : null}
         </div>
       </section>
     </main>
+    {view !== "assistant" && pendingSimpleConfirm ? (
+      <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="浅浅请求写入">
+        <div className="action-card confirm-sheet">
+          <div className="action-label">浅浅请求写入 · {pendingSimpleConfirm.call.name === "delete_task" ? "删除任务" : "修改任务状态"}</div>
+          <p className="action-delete-title">{pendingSimpleConfirm.title}</p>
+          <p className="action-delete-note">{pendingSimpleConfirm.note}</p>
+          <div className="action-buttons"><button className={pendingSimpleConfirm.danger ? "quiet-button danger" : "primary-button"} onClick={approveSimpleConfirm}>{pendingSimpleConfirm.confirmLabel}</button><button className="quiet-button" onClick={rejectConfirm}>取消</button></div>
+          <small className="confirm-hint">浅浅正在等你确认，确认前不会修改任何数据。</small>
+        </div>
+      </div>
+    ) : null}
     {view !== "assistant" && pendingTaskConfirm && taskConfirmDraft ? (
       <div className="confirm-overlay rescue-overlay" role="dialog" aria-label="浅浅请求写入任务">
         <div className="action-card confirm-sheet">
@@ -2730,6 +2806,8 @@ function AssistantView({
   pendingTaskConfirm,
   taskConfirmDraft,
   setTaskConfirmDraft,
+  pendingSimpleConfirm,
+  onApproveSimple,
   pendingPlanConfirm,
   confirmError,
   onApproveTask,
@@ -2780,6 +2858,8 @@ function AssistantView({
   onPasteImage: (event: React.ClipboardEvent<HTMLInputElement>) => void;
   onDropImage: (event: React.DragEvent<HTMLElement>) => void;
   pendingTaskConfirm: AgentToolCall | null;
+  pendingSimpleConfirm: SimpleConfirm | null;
+  onApproveSimple: () => void;
   taskConfirmDraft: TaskConfirmDraft | null;
   setTaskConfirmDraft: React.Dispatch<React.SetStateAction<TaskConfirmDraft | null>>;
   pendingPlanConfirm: PlanConfirmState | null;
@@ -2830,7 +2910,7 @@ function AssistantView({
     el.scrollTop = el.scrollHeight;
   }, [messages]);
   // 等待用户确认时不锁定输入：用户仍可浏览、打字，确认卡片在智能体页或兜底浮层里可见
-  const busy = (agentRunning && !agentBackground && !pendingTaskConfirm && !pendingPlanConfirm) || batchRunning;
+  const busy = (agentRunning && !agentBackground && !pendingTaskConfirm && !pendingSimpleConfirm && !pendingPlanConfirm) || batchRunning;
   return (
     <div className="assistant-layout">
       <div className="assistant-column">
@@ -2885,6 +2965,14 @@ function AssistantView({
               </div>
             ))}
 
+            {pendingSimpleConfirm ? (
+              <div className="action-card gsap-action-card inline-confirm">
+                <div className="action-label">浅浅请求写入 · {pendingSimpleConfirm.call.name === "delete_task" ? "删除任务" : "修改任务状态"}</div>
+                <p className="action-delete-title">{pendingSimpleConfirm.title}</p>
+                <p className="action-delete-note">{pendingSimpleConfirm.note}</p>
+                <div className="action-buttons"><button className={pendingSimpleConfirm.danger ? "quiet-button danger" : "primary-button"} onClick={onApproveSimple}>{pendingSimpleConfirm.confirmLabel}</button><button className="quiet-button" onClick={onRejectConfirm}>取消</button></div>
+              </div>
+            ) : null}
             {pendingTaskConfirm && taskConfirmDraft ? (
               <div className="action-card gsap-action-card inline-confirm">
                 <div className="action-label">{pendingTaskConfirm.name === "update_task" ? "浅浅请求写入 · 修改任务" : "浅浅请求写入 · 新任务"}</div>
@@ -4020,7 +4108,7 @@ function SettingsView({
   snapshot, profile, syncState, syncMessage, lastSyncedAt, conversationCount, notificationPermission,
   preferences, currentUser, llmConfig, defaultModelLabel, onToggleAnimations, onSaveLlm, onTestLlm,
   onSyncNow, onSaveProfile, onExport, onExportICal,
-  onEnableNotifications, onImport, onFile, onReset, onLogout, inputRef,
+  onEnableNotifications, onImport, onFile, onReset, onLogout, onChangePassword, inputRef,
 }: {
   snapshot: AppSnapshot;
   profile: UserProfile;
@@ -4045,12 +4133,34 @@ function SettingsView({
   onFile: (file?: File) => void;
   onReset: () => void;
   onLogout: () => void;
+  /** 修改自己的密码：返回错误文案，null 表示成功 */
+  onChangePassword: (current: string, next: string) => Promise<string | null>;
   inputRef: React.RefObject<HTMLInputElement | null>;
 }) {
   const [draft, setDraft] = useState<UserProfile>(profile);
   const [confirmReset, setConfirmReset] = useState(false);
+  const [showPassword, setShowPassword] = useState(false);
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNext, setPwNext] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [pwError, setPwError] = useState("");
+  const [pwMessage, setPwMessage] = useState("");
+  const [pwBusy, setPwBusy] = useState(false);
   const [llmDraft, setLlmDraft] = useState<LlmConfig>(() => llmConfig ?? { ...LLM_DEFAULTS, apiKey: "" });
   const [llmMessage, setLlmMessage] = useState("");
+  const submitPassword = async () => {
+    setPwError("");
+    setPwMessage("");
+    if (pwNext.length < 6) { setPwError("新密码至少 6 位。"); return; }
+    if (pwNext !== pwConfirm) { setPwError("两次输入的新密码不一致。"); return; }
+    setPwBusy(true);
+    const failure = await onChangePassword(pwCurrent, pwNext);
+    setPwBusy(false);
+    if (failure) { setPwError(failure); return; }
+    setPwMessage("密码已修改，其它设备上的登录已退出。");
+    setShowPassword(false);
+    setPwCurrent(""); setPwNext(""); setPwConfirm("");
+  };
   const [llmTesting, setLlmTesting] = useState(false);
   const notificationLabel =
     notificationPermission === "granted" ? "桌面提醒已开启"
@@ -4270,8 +4380,25 @@ function SettingsView({
               <strong>{currentUser.displayName}</strong>
               <small>@{currentUser.username} · {currentUser.role === "admin" ? "管理员" : "学生"} · 数据按账号隔离，换设备登录同一账号即可继续</small>
             </div>
+            <button className="quiet-button" onClick={() => { setShowPassword((value) => !value); setPwError(""); setPwMessage(""); }}>
+              修改密码
+            </button>
             <button className="quiet-button" onClick={onLogout}>登出</button>
           </div>
+          {showPassword ? (
+            <div className="password-form">
+              <label><span>当前密码</span><input type="password" value={pwCurrent} onChange={(event) => setPwCurrent(event.target.value)} aria-label="当前密码" autoComplete="current-password" /></label>
+              <label><span>新密码</span><input type="password" value={pwNext} onChange={(event) => setPwNext(event.target.value)} aria-label="新密码" autoComplete="new-password" /></label>
+              <label><span>确认新密码</span><input type="password" value={pwConfirm} onChange={(event) => setPwConfirm(event.target.value)} aria-label="确认新密码" autoComplete="new-password" /></label>
+              <div className="data-actions">
+                <button className="primary-button" onClick={submitPassword} disabled={pwBusy}>{pwBusy ? "正在保存…" : "保存新密码"}</button>
+                <button className="text-button" onClick={() => { setShowPassword(false); setPwCurrent(""); setPwNext(""); setPwConfirm(""); setPwError(""); }}>取消</button>
+              </div>
+              {pwError ? <div className="queue-error">{pwError}</div> : null}
+            </div>
+          ) : null}
+          {pwMessage ? <div className="account-success">{pwMessage}</div> : null}
+          <small className="auth-hint">修改密码后，其它设备上的登录会自动退出，当前设备不受影响。</small>
         </section>
       </div>
     </div>

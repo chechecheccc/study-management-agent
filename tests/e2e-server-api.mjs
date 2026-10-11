@@ -82,6 +82,15 @@ r = await call("/api/sync/delete", { method: "POST", body: JSON.stringify({ enti
 check("删除上报成功", r.status === 200 && r.data?.ok, `deleted=${r.data?.deleted}`);
 r = await call("/api/sync/pull");
 check("删除后不再返回该对话", (r.data?.data?.conversations?.length ?? -1) === 0, `conversations=${r.data?.data?.conversations?.length}`);
+// 8b) 删除记录（墓碑）必须随拉取一起返回，否则其它设备会把已删记录重新推上来
+const marks = r.data?.data?.deletions ?? [];
+check("拉取返回删除记录", marks.some((mark) => mark.entity === "conversations" && mark.id === "conv-1"), JSON.stringify(marks).slice(0, 90));
+// 再删一条任务，确认任务类型也会记墓碑
+r = await call("/api/sync/delete", { method: "POST", body: JSON.stringify({ entity: "tasks", ids: ["task-1"] }) });
+r = await call("/api/sync/pull");
+check("任务删后不再返回", (r.data?.data?.tasks?.length ?? -1) === 0, `tasks=${r.data?.data?.tasks?.length}`);
+check("任务删除也有墓碑", (r.data?.data?.deletions ?? []).some((mark) => mark.entity === "tasks" && mark.id === "task-1"));
+check("不会把别的实体的删除混进来", !(r.data?.data?.deletions ?? []).some((mark) => mark.entity === "courses"));
 
 // 9) 登出后会话失效
 r = await call("/api/auth/logout", { method: "POST" });

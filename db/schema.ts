@@ -53,6 +53,23 @@ export const sessions = pgTable(
   (table) => [index("sessions_user_idx").on(table.userId)],
 );
 
+// ---------- 删除墓碑 ----------
+// 删除不能只把数据行删掉：其它设备手上还有旧副本，下次拉取时看不到该行就以为“从没有过”，还会把它重新推上去。
+// 所以删除时额外记一条墓碑，拉取时一并返回，客户端据此删掉本地旧副本。
+export const deletions = pgTable(
+  "deletions",
+  {
+    userId: text("user_id").notNull(),
+    entity: text("entity").notNull(), // courses | resources | tasks | conversations
+    recordId: text("record_id").notNull(),
+    deletedAt: text("deleted_at").notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.userId, table.entity, table.recordId] }),
+    index("deletions_user_idx").on(table.userId),
+  ],
+);
+
 // ---------- 业务数据（与客户端 AppSnapshot 对应）----------
 
 export const courses = pgTable(

@@ -16,11 +16,15 @@ export type SyncPayload = {
   profile: UserProfile;
 };
 
+export type DeletionMark = { entity: "courses" | "resources" | "tasks" | "conversations"; id: string; deletedAt: string };
+
 export type CloudSnapshot = {
   courses: Course[];
   resources: Resource[];
   tasks: Task[];
   conversations: ConversationRecord[];
+  /** 服务端上的删除记录（墓碑）：本地还有旧副本就按它删掉 */
+  deletions?: DeletionMark[];
   profile: UserProfile | null;
 };
 
@@ -91,6 +95,16 @@ export function mergeCloud(local: AppSnapshot, cloud: CloudSnapshot): { snapshot
     JSON.stringify(resources) !== JSON.stringify(local.resources) ||
     JSON.stringify(tasks) !== JSON.stringify(local.tasks);
   return { snapshot: { courses, resources, tasks }, changed };
+}
+
+/**
+ * 把服务端的删除记录应用到本地列表：
+ * 删除到服务端之后，其它设备手上的旧副本不会自动消失，且会被重新推上去；这里先把它们从本地剔掉。
+ */
+export function applyDeletions<T extends Syncable>(local: T[], marks: DeletionMark[] | undefined, entity: DeletionMark["entity"]): T[] {
+  const dead = new Set((marks ?? []).filter((mark) => mark.entity === entity).map((mark) => mark.id));
+  if (!dead.size) return local;
+  return local.filter((item) => !dead.has(item.id));
 }
 
 /** 合并会话（按 updatedAt 取较新者，消息合并且按 id 去重） */

@@ -153,7 +153,7 @@ export function AccountPanel({ accounts, currentUserId, onCreate, onToggleDisabl
             <div>
               <div className="card-kicker">TEST ACCOUNTS · {testAccounts.length}</div>
               <h3>测试账号</h3>
-              <p className="account-tests-note">这些是自动化测试每跑一次就注册的临时账号，平时用不到，可以整批清理。</p>
+              <p className="account-tests-note">这些是通过登录页「注册」入口自助建的账号（自动化测试也走这个入口，每跑一次就会在这里留一条）。不需要的可以整批清理，也可以展开逐个删除。</p>
             </div>
             <div className="account-tests-actions">
               <button className="quiet-button" onClick={() => setShowTests((value) => !value)}>{showTests ? "收起" : "展开查看"}</button>

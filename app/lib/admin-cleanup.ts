@@ -6,6 +6,7 @@ import { eq, inArray } from "drizzle-orm";
 import {
   conversations,
   courses,
+  deletions,
   files,
   messages,
   profiles,
@@ -28,6 +29,7 @@ export async function purgeUserData(db: Db, userId: string) {
   await db.delete(courses).where(eq(courses.userId, userId));
   await db.delete(files).where(eq(files.userId, userId));
   await db.delete(profiles).where(eq(profiles.userId, userId));
+  await db.delete(deletions).where(eq(deletions.userId, userId));
   await db.delete(sessions).where(eq(sessions.userId, userId));
 }
 
@@ -59,6 +61,7 @@ export async function deleteAccounts(db: Db, ids: string[]): Promise<string[]> {
   await db.delete(courses).where(inArray(courses.userId, ids));
   await db.delete(files).where(inArray(files.userId, ids));
   await db.delete(profiles).where(inArray(profiles.userId, ids));
+  await db.delete(deletions).where(inArray(deletions.userId, ids));
   await db.delete(sessions).where(inArray(sessions.userId, ids));
   await db.delete(users).where(inArray(users.id, ids));
   return rows.map((row) => row.username).sort();

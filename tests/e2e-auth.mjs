@@ -88,6 +88,12 @@ try {
   await page.locator('input[aria-label="新账号密码"]').fill("abc123456");
   await page.getByRole("button", { name: /创建账号/ }).click();
   await page.waitForTimeout(1500);
+  // 测试类账号在「测试账号」分组里且默认收起，先展开再数
+  const expand = page.getByRole("button", { name: "展开查看" });
+  if (await expand.count()) {
+    await expand.click();
+    await page.waitForTimeout(500);
+  }
   const afterCreate = await page.locator(".account-row").count();
   check("新增账号成功", afterCreate === listed + 1, `新增前 ${listed} → 新增后 ${afterCreate}`);
 

@@ -4,7 +4,7 @@
 // 因此删除操作必须显式上报（离线时删除暂不传播）。
 import { and, eq, inArray } from "drizzle-orm";
 import { withPg } from "../../../../db/pg";
-import { conversations, courses, messages, resources, tasks } from "../../../../db/schema";
+import { conversations, courses, deletions, messages, resources, tasks } from "../../../../db/schema";
 import { getSessionUser } from "../../../lib/server-auth";
 
 const ENTITY_TABLES = {
@@ -40,6 +40,17 @@ export async function POST(request: Request) {
         .delete(table)
         .where(and(eq(table.userId, user.id), inArray(table.id, ids)))
         .returning({ id: table.id });
+      // 记下墓碑：其它设备下次拉取时才知道这条已经被删，不会把它重新推上来
+      if (rows.length) {
+        const deletedAt = new Date().toISOString();
+        await db
+          .insert(deletions)
+          .values(rows.map((row) => ({ userId: user.id, entity, recordId: row.id, deletedAt })))
+          .onConflictDoUpdate({
+            target: [deletions.userId, deletions.entity, deletions.recordId],
+            set: { deletedAt },
+          });
+      }
       // 删除对话时，连带删除其消息
       if (entity === "conversations") {
         const convIds = ids;

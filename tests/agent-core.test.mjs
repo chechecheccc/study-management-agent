@@ -5,6 +5,8 @@ import test from "node:test";
 
 import { runAgentLoop } from "../app/agent/loop.ts";
 import { AGENT_TOOLS, getToolSpec, toolSchemasForModel } from "../app/agent/tools.ts";
+import { applyDeletions } from "../app/lib/cloud-sync.ts";
+import { isTestUsername } from "../app/lib/test-accounts.ts";
 import { sanitizeAgentContext, sanitizeAgentMessages } from "../app/agent/protocol.ts";
 import { computeProactiveSignals, buildProactiveGoal } from "../app/agent/triggers.ts";
 import { formatProfileForPrompt, sanitizeProfile } from "../app/agent/memory.ts";
@@ -313,6 +315,45 @@ test("Sprint 4 工具注册表：内容阅读、记忆笔记、任务修改", ()
   assert.equal(getToolSpec("read_resource").requiresConfirmation, false);
   assert.equal(getToolSpec("remember_fact").requiresConfirmation, false);
   assert.match(getToolSpec("search_resources").description, /正文/);
+});
+
+test("写入类工具必须经用户确认，读取类不需要", () => {
+  // “写入前一定先问你”：所有会改动课程/任务数据的工具都要确认
+  for (const name of ["create_task", "update_task", "update_task_status", "delete_task", "save_review_plan"]) {
+    assert.equal(getToolSpec(name).requiresConfirmation, true, name + " 应该需要确认");
+  }
+  // 读取与记忆类不弹确认卡片，否则会没完没了地打断用户
+  for (const name of ["list_courses", "list_tasks", "search_resources", "read_resource", "navigate", "remember_fact", "update_profile", "create_course"]) {
+    assert.equal(getToolSpec(name).requiresConfirmation, false, name + " 不应该需要确认");
+  }
+});
+
+test("跨设备删除：服务端删除记录会把本地旧副本剔掉", () => {
+  const local = [
+    { id: "t1", title: "保留", updatedAt: "2026-10-01T00:00:00.000Z" },
+    { id: "t2", title: "已删", updatedAt: "2026-10-01T00:00:00.000Z" },
+  ];
+  // 其它类型的墓碑不应影响任务
+  const marks = [
+    { entity: "tasks", id: "t2", deletedAt: "2026-10-02T00:00:00.000Z" },
+    { entity: "courses", id: "t1", deletedAt: "2026-10-02T00:00:00.000Z" },
+  ];
+  const alive = applyDeletions(local, marks, "tasks");
+  assert.deepEqual(alive.map((item) => item.id), ["t1"]);
+  // 没有墓碑时原样返回（避免每次拉取都重建数组）
+  assert.equal(applyDeletions(local, undefined, "tasks"), local);
+  assert.equal(applyDeletions(local, [], "tasks"), local);
+});
+
+test("测试账号识别：测试前缀能认出，真人账号不误判", () => {
+  // 自动化测试注册出来的用户名（前缀 + 随机后缀）应该都能认出
+  for (const name of ["syncbzjxj", "stubxn3q", "presetabcde", "libwctjf", "smoke7cffv", "taskfeatsyn1e", "convz7xor"]) {
+    assert.equal(isTestUsername(name), true, name + " 应该被认为是测试账号");
+  }
+  // 初始化账号与看上去像真人的名字不能被判成测试账号
+  for (const name of ["admin", "student1", "student2", "student3", "teacher2026", "user001", "zhangsan2026"]) {
+    assert.equal(isTestUsername(name), false, name + " 不应该被当成测试账号");
+  }
 });
 
 test("提醒规则解析：提前3天、1天、2小时", () => {

@@ -36,6 +36,13 @@
       "when": 1791631133886,
       "tag": "0004_task_detail",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "7",
+      "when": 1791692740199,
+      "tag": "0005_perpetual_firebrand",
+      "breakpoints": true
     }
   ]
 }

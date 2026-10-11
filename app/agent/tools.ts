@@ -81,7 +81,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
   {
     name: "update_task_status",
     label: "更新任务状态",
-    description: "把已有任务标记为 进行中 / 已完成 等状态。按任务标题模糊匹配，优先使用 list_tasks 返回的标题。",
+    description: "把已有任务标记为 进行中 / 已完成 等状态。按任务标题模糊匹配，优先使用 list_tasks 返回的标题。调用后系统会向用户弹确认卡片，确认后才真正修改。",
     parameters: {
       type: "object",
       properties: {
@@ -91,7 +91,7 @@ export const AGENT_TOOLS: ToolSpec[] = [
       required: ["taskTitle", "status"],
       additionalProperties: false,
     },
-    requiresConfirmation: false,
+    requiresConfirmation: true,
   },
   {
     name: "delete_task",

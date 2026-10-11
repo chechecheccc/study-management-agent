@@ -462,6 +462,9 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .confirm-sheet .plan-session-list .plan-item { padding: 10px 2px; }
 .confirm-sheet .action-buttons { position: sticky; bottom: 0; margin-top: 12px; padding: 12px 0 2px; background: #fff9f6; border-top: 1px solid #f0e4de; }
 .confirm-sheet .confirm-hint { flex: none; }
+/* 删除任务确认卡片：把要删的任务名放大，避免看错而误删 */
+.action-delete-title { margin: 4px 0 0; font-size: 15px; font-weight: 600; color: var(--ink); }
+.action-delete-note { margin: 6px 0 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .confirm-hint { display: block; margin-top: 10px; color: var(--muted); font-size: 10px; }
 @media (prefers-reduced-motion: reduce) {
   .confirm-overlay { backdrop-filter: none; }
@@ -504,6 +507,12 @@ h1 em { font-style: normal; color: var(--coral-dark); }
 .account-actions { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
 .account-actions input { width: 110px; border: 1px solid var(--line); border-radius: 8px; padding: 6px 8px; font-size: 11px; }
 .quiet-button.danger { background: #fae7e1; color: #975348; border-color: #e8c8bf; }
+/* 设置 → 账号：修改密码表单 */
+.password-form { display: grid; gap: 10px; margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+.password-form label { display: grid; gap: 5px; }
+.password-form label > span { color: var(--muted); font-size: 10px; }
+.password-form input { border: 1px solid var(--line); border-radius: 9px; padding: 8px 10px; font-size: 12px; background: #fff; }
+.password-form .data-actions { margin-top: 2px; }
 .account-success { margin-top: 10px; border-radius: 9px; background: #eef4ea; color: #4f6b4c; padding: 9px 11px; font-size: 11px; }
 /* 测试账号：单独一块、默认收起，避免淹没正式账号 */
 .account-tests { margin-top: 18px; border-style: dashed; }
