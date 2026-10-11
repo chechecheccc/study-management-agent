@@ -6,10 +6,13 @@
 //   node --experimental-strip-types scripts/clean-test-users.mjs --apply --also 名字1,名字2   # 额外按用户名删除
 import { readFileSync } from "node:fs";
 
-const envText = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
-const dbUrl = envText.split("\n").find((line) => line.startsWith("DATABASE_URL="))?.slice("DATABASE_URL=".length).trim();
-if (!dbUrl) throw new Error("未在 .env.local 找到 DATABASE_URL");
-process.env.DATABASE_URL = dbUrl;
+// 优先用环境变量传入的 DATABASE_URL（便于对着其它库跑），没有再回退到 .env.local
+if (!process.env.DATABASE_URL?.trim()) {
+  const envText = readFileSync(new URL("../.env.local", import.meta.url), "utf8");
+  const dbUrl = envText.split(/\r?\n/).find((line) => line.startsWith("DATABASE_URL="))?.slice("DATABASE_URL=".length).trim();
+  if (!dbUrl) throw new Error("未在 .env.local 找到 DATABASE_URL（也没有通过环境变量传入）");
+  process.env.DATABASE_URL = dbUrl;
+}
 
 const args = process.argv.slice(2);
 const apply = args.includes("--apply");

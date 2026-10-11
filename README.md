@@ -1,271 +1,196 @@
-# 学习管家 · Study Management Agent
+# 浅浅 qianqian · 个人学习管理智能体
 
-面向学生个人的本地优先学习管理 Web 应用。产品以智能体对话为主入口，以资料库、任务中心、复习计划和数据管理页面作为确认、浏览和编辑工具，帮助学生建立：
+浅浅是一个**以 Agent 为核心**的个人学习管理应用：用一句话说出需求，它会自己查证你的课程、资料和任务，再动手；**写入之前一定先问你**。
 
-```text
-课程资料入库 → 结构化标签 → 资料检索 → DDL/考试管理 → 复习计划
+它不是一个"套壳聊天框"——真正的核心是 `app/agent/loop.ts` 里的 Agent 循环：感知 → 调模型决策 → 执行工具 → 观察结果 → 再决策，直到给出结论。
+
+```
+用户一句话
+   ↓
+Agent 循环（客户端驱动，可单测）
+   ├─ 第 1 步：带上 13 个工具的 schema 调模型
+   ├─ 模型回"直接回答" → 结束
+   └─ 模型回"调用工具" → 本地执行 → 结果回灌 → 第 2 步 …
+   ↓
+写操作（建/改/删任务、改状态、存复习计划）→ 弹出确认卡片 → 你点了才写入
 ```
 
-## 项目定位
+## 13 个工具
 
-当前版本围绕以下学生场景设计：
+| 类型 | 工具 |
+|---|---|
+| 查询（免确认） | `list_courses`、`list_tasks`、`search_resources`、`read_resource`、`navigate` |
+| 记忆（免确认） | `remember_fact`、`update_profile` |
+| 课程（免确认） | `create_course` |
+| **写入（需确认）** | `create_task`、`update_task`、`update_task_status`、`delete_task`、`save_review_plan` |
 
-- 用自然语言录入 DDL、考试和复习任务。
-- 上传课程资料，让 AI 辅助提取课程、资料类型、标签和截止时间。
-- 在本地资料库中按标题、课程和标签检索文件。
-- 先展示 AI 候选结果，用户确认后再写入本地数据。
-- 根据课程、考试时间和空闲时间生成可调整的复习计划草案。
-- 在暂不建立账号和云端数据库的阶段，优先保证本地可用、数据可控和失败可恢复。
+护栏：同一轮里"相同工具 + 相同参数"的只读调用只执行一次；确认卡片 3 分钟无人应答自动取消；默认最多 8 步（排复习计划放宽到 18 步）。
 
-## 当前版本能力
+## 功能
 
-### 已实现
+- **浅浅（智能体）**：对话 + 工具调用，能读你的资料正文、查任务、排计划；支持图片/截图（原生多模态），聊天里直接粘图或选图都行。
+- **任务中心**：DDL / 考试 / 复习三类任务，未逾期在前、已逾期沉底、已完成单独成组；自定义提醒、关联资料、任务附图、详细计划。
+- **复习计划**：说清考试时间和空闲时段，它会真的读完这门课的课件再拆安排（每条带重点、复习路线、自测点），确认后写入任务中心。
+- **课程与资料**：新建/拖拽排序课程；PDF / Word / PPT / 图片入库并抽取正文，原文件存数据库（换设备也能打开）。
+- **设置**：界面动画开关、桌面提醒与日历导出（.ics）、数据备份/恢复、学习画像、模型设置、账号与修改密码。
+- **账号管理（仅管理员）**：新增账号、停用/启用、重置密码、删除、一键清理测试账号。
 
-- 智能体对话入口：支持 DDL 录入、资料检索和打开复习计划等常见意图。
-- 任务中心：手动创建 DDL、考试、复习任务；未逾期/已逾期/已完成分组，行内编辑，可关联资料、可附图、提醒时间可自定义。
-- 复习计划：按课程与空闲时间生成具体到天的计划，读课件后给出重点/路线/自测，确认后写入任务中心。
-- 资料库：手动创建资料卡片，按标题、课程和标签检索。
-- 文件导入：支持 PDF、Word、PPT、PNG、JPEG、WebP、GIF。
-- 批量导入：单个文件最大 100MB，单批次最大 500MB，支持逐项确认、取消、失败和重试。
-- AI 提取：支持文本、图片、文件名三种输入，调用 GLM-5V-Turbo 返回结构化结果。
-- PDF 提取：普通 PDF 在浏览器本地提取正文；扫描 PDF 渲染前最多 3 页交给视觉模型识别。
-- 本地保存：课程、资料、任务和原始文件保存到浏览器 IndexedDB。
-- 文件预览：支持图片、PDF、DOCX 正文和 PPTX 按页文字预览。
-- 预设课程：每个账号自动带一门「机器学习」课程与两份预设课件（PDF 原件在服务端只存一份，全账号共用）。
-- 本地备份：支持下载和恢复课程、资料、任务 JSON 快照。
-- 设置页：外观与动画开关（可关掉片头与过渡动画）、模型（可换成用户自己的 OpenAI 兼容模型）、提醒与日历、数据与同步（备份/恢复/云同步/重置）、学习画像、账号。
+## 技术栈
 
-### 当前未实现
+| 层 | 选型 |
+|---|---|
+| 前端 | Next.js 16 + React 19，构建用 Vinext（Vite 8），动画用 GSAP |
+| 数据（本机） | IndexedDB：课程 / 资料 / 任务 / 对话 / 原文件，离线可用 |
+| 数据（服务端） | PostgreSQL 18 + Drizzle ORM（10 张表，含文件二进制与删除墓碑） |
+| 模型 | 默认 DeepSeek（OpenAI 兼容接口），也可在设置里填自己的模型 |
+| 运行时 | Vinext/Cloudflare Workers 风格的 API 路由（每请求一个数据库连接） |
 
-- 账号注册、登录、多用户隔离和跨设备同步。
-- 云端数据库、云端文件存储和多人协作。
-- 真正的后台定时提醒、浏览器推送、邮件或短信通知。
-- iCal/ICS、CSV 和 Markdown 导出。
-- 基于真实任务和资料状态的 AI 复习计划持久化保存。
-- `.doc`、`.ppt` 旧版 Office 文件的浏览器内直接预览。
+### 数据怎么走
 
-## 技术架构
-
-```text
-浏览器
-├── React / Next.js 页面
-├── GSAP 动画层
-├── IndexedDB：课程、资料、任务、原始文件
-├── PDF.js：PDF 正文提取和扫描页渲染
-└── /api/ai/extract
-      │
-      ▼
-服务端模型代理
-├── 校验请求来源、格式和大小
-├── 读取服务端 GLM_API_KEY
-├── 调用 GLM-5V-Turbo
-└── 返回资料候选、任务候选、证据和追问
+```
+浏览器 IndexedDB（先写本地，离线可用）
+        ↓ 自动同步（逐条按 updatedAt 取新者）
+PostgreSQL（9 + 1 张表：users/sessions/courses/resources/tasks/
+            conversations/messages/profiles/files + deletions）
 ```
 
-### AI 识别流程
+- 同一账号在**任何设备**登录，课程、资料、任务、对话、原文件、画像都会同步。
+- 删除会传播：服务端记一条"删除墓碑"，其它设备下次拉取时把本地旧副本一并删掉（避免删了又回来）。
+- 账号之间完全隔离（每个用户的数据都按 `user_id` 过滤）。
 
-1. 用户输入文字或上传资料。
-2. 浏览器校验文件格式和大小。
-3. PDF 在浏览器本地提取文字；没有文字层时渲染前 3 页。
-4. 必要的文字或图片发送到 `/api/ai/extract`。
-5. 服务端读取环境变量中的 API 密钥并调用 GLM-5V-Turbo。
-6. 页面展示识别候选、置信度、原文证据和追问。
-7. 用户确认或修改后，才保存到本地资料库和任务中心。
+## 目录结构
 
-原始文件默认留在用户当前浏览器。只有用户主动执行 AI 识别时，识别所需的文本或图片才会发送到模型代理。
-
-## 项目目录树
-
-以下树状结构只列出当前 Git 仓库中的源码、配置、测试和静态资源。工作区中尚未加入 Git 的本地文档不列入此处；`node_modules`、`.next`、`dist`、`.vinext`、`.wrangler` 等生成目录也不应提交。
-
-```text
-study-management-agent/
-├── .env.example                         # 环境变量模板，不包含真实密钥
-├── .gitignore                            # Git 忽略规则
-├── .openai/
-│   └── hosting.json                      # 托管平台配置；当前未启用 D1/R2
-├── README.md                             # 项目总说明、目录树、运行和部署指南
-├── package.json                          # 依赖、脚本和 Node.js 版本要求
-├── package-lock.json                     # npm 依赖版本锁定文件
-├── tsconfig.json                         # TypeScript 编译配置
-├── next.config.ts                        # Next.js 配置入口
-├── vite.config.ts                        # Vinext/Vite、Cloudflare 和本地绑定配置
-├── postcss.config.mjs                    # PostCSS/Tailwind CSS 配置
-├── eslint.config.mjs                     # ESLint 检查配置
-├── drizzle.config.ts                     # Drizzle Kit 数据库迁移配置
-├── app/
-│   ├── layout.tsx                        # 全局布局、字体、标题和 favicon
-│   ├── page.tsx                          # 主页面、导航、对话和主要业务逻辑
-│   ├── globals.css                       # 全局样式、响应式布局和动画样式
-│   ├── chatgpt-auth.ts                   # ChatGPT 宿主身份读取工具，当前未启用登录
-│   ├── api/
-│   │   └── ai/
-│   │       ├── extract/
-│   │       │   └── route.ts               # GLM 服务端模型代理接口
-│   │       └── health/
-│   │           └── route.ts               # 模型配置健康检查接口
-│   ├── components/
-│   │   ├── import-queue.tsx              # 多文件导入队列和候选确认 UI
-│   │   └── study-intro.tsx               # GSAP 全屏学习主题片头动画
-│   └── lib/
-│       ├── ai-contract.ts                # AI 请求、结果结构和模型输出校验
-│       ├── file-preview.ts               # 图片、PDF、DOCX、PPTX 本地预览
-│       ├── import-queue.ts                # 文件格式、大小和导入草稿规则
-│       ├── local-store.ts                # IndexedDB、本地文件和示例数据
-│       └── pdf-extract.ts                # PDF 正文提取和扫描页视觉识别兜底
-├── public/
-│   ├── favicon.svg                       # 浏览器标签页图标
-│   ├── file.svg                          # 文件图标资源
-│   ├── globe.svg                         # 模板静态图标，目前不是核心业务资源
-│   ├── window.svg                        # 模板静态图标，目前不是核心业务资源
-│   └── pdf.worker.min.mjs                # PDF.js worker，必须随项目部署
-├── db/
-│   ├── index.ts                          # Cloudflare D1 + Drizzle 连接入口
-│   └── schema.ts                         # 主应用数据库 schema，目前为空
-├── drizzle/
-│   └── meta/
-│       └── _journal.json                 # Drizzle 迁移元数据，目前无实际迁移
-├── examples/
-│   └── d1/
-│       ├── app/api/notes/route.ts        # D1 notes 示例 GET/POST 接口
-│       └── db/schema.ts                  # D1 notes 示例表结构
-├── build/
-│   └── sites-vite-plugin.ts              # 构建后打包托管配置和迁移文件的 Vite 插件
-├── worker/
-│   └── index.ts                          # Cloudflare Worker 入口和图片优化适配
-└── tests/
-    └── rendered-html.test.mjs            # Node 自动化回归测试
+```
+app/
+  agent/            Agent 内核（纯逻辑、可单测）
+    loop.ts           循环：感知 → 决策 → 工具 → 观察
+    tools.ts          13 个工具的注册表（schema + 是否需要确认）
+    prompts.ts        系统提示词
+    memory.ts         长期记忆（画像 + 笔记）
+    reminders.ts      提醒调度
+    triggers.ts       主动巡检信号
+    conversations.ts  会话分组/标题
+    protocol.ts       请求协议与清洗（长度上限、代理对处理）
+  api/
+    agent/step/       单步代理：转发给模型，返回"回答"或"工具调用"
+    ai/extract/       文件/截图信息抽取
+    ai/health|ping/   模型健康检查与连接测试
+    auth/             login / logout / me / register / password
+    sync/             pull / push / delete（含删除墓碑）
+    files/            upload / [id]（原文件存数据库）
+    admin/users/      账号管理（列表/新建/改/删/清理测试账号）
+  components/       登录页、账号面板、导入队列、片头动画
+  lib/              账号、云同步、模型配置、PDF/Word/PPT 抽取、复习计划、任务逻辑…
+  page.tsx          主界面（浅浅 / 任务中心 / 复习计划 / 设置 / 账号管理）
+db/                 schema.ts（Drizzle 表定义）、pg.ts（连接）
+drizzle/            迁移 SQL（0000–0005）
+scripts/            初始化账号、写入预设课件、清理测试账号
+tests/              测试（含一键跑全量）
+worker/ build/ .openai/   构建脚手架（Vinext/Workers 运行时需要，勿删）
 ```
 
-## 文件职责概览
+## 快速开始
 
-### 页面和业务代码
+前置：Node.js ≥ 22.13、PostgreSQL ≥ 14（本机或远程都行）。
 
-- `app/page.tsx`：当前业务核心，连接对话、导入队列、本地数据和五个视图。
-- `app/lib/ai-contract.ts`：定义文本、图片、文件名三种识别模式，以及任务、资料、置信度、证据和追问字段。
-- `app/lib/file-preview.ts`：生成本地文件预览。DOCX 读取 `word/document.xml`，PPTX 读取幻灯片 XML。
-- `app/lib/import-queue.ts`：执行格式校验、100MB/500MB 限制和待确认资料/任务草稿生成。
-- `app/lib/local-store.ts`：使用 IndexedDB 保存课程、资料、任务和原始文件，并提供 localStorage 兜底。
-- `app/lib/pdf-extract.ts`：使用 PDF.js 本地提取正文；无文字层时渲染前 3 页并合并视觉识别结果。
-- `app/api/ai/extract/route.ts`：服务端读取 `GLM_API_KEY`，调用 GLM 并返回结构化识别结果。
-- `app/components/import-queue.tsx`：展示队列状态、证据、置信度、DDL 勾选、确认、重试和删除操作。
-- `app/components/study-intro.tsx`：全屏片头动画，展示资料入库、DDL 提醒和复习计划概念。
-
-### 数据库和托管脚手架
-
-- `db/`、`drizzle/`：未来接入 D1/Drizzle 的基础代码；当前主应用仍使用 IndexedDB。
-- `examples/d1/`：演示 D1 notes 表和接口，当前页面没有调用。
-- `worker/index.ts`：Cloudflare Worker 入口和图片优化适配。
-- `build/sites-vite-plugin.ts`：构建完成后复制托管配置和迁移文件到 `dist/.openai`。
-
-### 静态资源
-
-`public/pdf.worker.min.mjs` 是 PDF.js 的第三方压缩 worker，不是普通临时构建文件，必须提交并部署。`favicon.svg`、`file.svg`、`globe.svg` 和 `window.svg` 是页面图标资源，其中后两个属于模板遗留资源。
-
-## 本地运行
-
-### 环境要求
-
-- Node.js `>=22.13.0`。
-- npm。
-- 可访问 GLM API 的网络环境。
-
-### 安装和启动
-
-Windows PowerShell：
-
-```powershell
+```bash
+# 1) 装依赖
 npm install
-Copy-Item .env.example .env.local
-npm run dev
+
+# 2) 建库（示例：本机 PostgreSQL）
+#    createdb qianqian    （或 psql -c "CREATE DATABASE qianqian;")
+
+# 3) 配置环境变量
+cp .env.example .env.local     # 然后编辑，填自己的库地址与模型密钥
+
+# 4) 建表（把 drizzle/ 里的迁移全部应用）
+npm run db:migrate
+
+# 5) 初始化账号：admin / student1 / student2
+npm run db:seed:users
+
+# 6) 启动
+npm run dev        # http://localhost:3000
 ```
 
-然后在 `.env.local` 中填写：
+登录：管理员 `admin / admin123`，普通用户 `student1 / 123456`、`student2 / 123456`。
+**第一次登录后请立刻在「设置 → 账号 → 修改密码」里改掉默认密码。**
 
-```env
-GLM_API_KEY=你的服务端密钥
-GLM_MODEL=glm-5v-turbo
-GLM_API_URL=https://open.bigmodel.cn/api/paas/v4/chat/completions
+### 环境变量（`.env.local`）
+
+```ini
+# 服务端模型：Agent 对话与工具调用
+DEEPSEEK_AGENT_MODEL=deepseek-v4-flash
+# 服务端模型：文件 / 截图信息抽取（需要多模态）
+DEEPSEEK_EXTRACT_MODEL=deepseek-v4-flash
+DEEPSEEK_API_KEY=你的密钥
+DEEPSEEK_API_URL=https://api.deepseek.com/chat/completions
+
+# PostgreSQL
+DATABASE_URL=postgresql://用户:密码@127.0.0.1:5432/qianqian
 ```
 
-`.env.local` 不得提交到 GitHub。朋友协作时，每个人都应从 `.env.example` 创建自己的本地环境文件。
+只想用自己电脑上的数据库、不想接模型也行：不填 `DEEPSEEK_API_KEY` 时数据管理和 Agent 的工具部分照常可用，只有"在线识别"和"模型对话"会提示未配置。
+
+### 用你自己的模型
+
+「设置 → 模型」里可以填任意 **OpenAI 兼容**接口：接口地址和 API Key 是两边共用的，下面两个模型各管一件事：
+
+- **对话模型**：聊天、工具调用、排复习计划；
+- **视觉模型**：看图片 / 截图 / 文件识别。
+
+配置只存在**本机浏览器**（localStorage），随请求发给服务端转发，不写进数据库；留空则回退到 `.env.local` 里的默认模型。
+
+### 预设课件（可选）
+
+「机器学习」课程的两份预设课件正文已内嵌在 `app/lib/preset-courseware.ts`，所有账号登录后都能看到内容。如果还想让"打开原文件"可用，把 PDF 原件入库：
+
+```bash
+npm run db:seed:presets                      # 用默认路径
+npm run db:seed:presets 第1章.pdf 第2章.pdf   # 或指定文件
+```
 
 ## 常用命令
 
-```bash
-npm install          # 安装依赖
-npm run dev          # 启动本地开发服务
-npm run build        # 执行 Vinext 生产构建
-npx next build       # 按 EdgeOne 当前方式验证 Next 构建
-npm run start        # 启动生产服务
-npm run lint         # ESLint 检查
-npm test             # 生产构建并运行自动化测试
-npm run db:generate  # 生成 Drizzle 迁移
-npm run db:seed:presets  # 把两份预设课件 PDF 写进数据库（默认读桌面上的两份教材）
-```
+| 命令 | 作用 |
+|---|---|
+| `npm run dev` | 本地开发（http://localhost:3000） |
+| `npm run build` / `npm start` | 生产构建 / 启动 |
+| `npm run lint` | ESLint |
+| `npm test` | 构建 + 渲染测试 + Agent 单元测试（快） |
+| `npm run test:e2e` | 全量端到端测试（需先 `npm run dev`） |
+| `npm run db:migrate` | 应用迁移（新库建表；已有库是安全的空操作） |
+| `npm run db:seed:users` | 初始化 admin / student1 / student2 |
+| `npm run db:seed:presets` | 写入预设课件原件 |
+| `npm run accounts:clean` | 清理测试账号（加 `--apply` 才真删） |
 
-## EdgeOne 部署建议
+## 测试
 
-当前项目按 GitHub 仓库部署到 EdgeOne 时，建议使用：
+- `tests/agent-core.test.mjs`：Agent 内核纯逻辑（循环、工具表、提醒、任务分组、同步合并等）
+- `tests/rendered-html.test.mjs`：仓库结构与关键约束
+- `tests/e2e-*.mjs`：浏览器端到端（分账号、聊天、导入、任务、复习计划、同步、确认卡片…）
 
-| 配置项 | 值 |
-| --- | --- |
-| 代码仓库 | `chechecheccc/study-management-agent` |
-| 生产分支 | `main` |
-| 框架预设 | Next |
-| 根目录 | `./` |
-| 安装命令 | `npm install` |
-| 构建命令 | `next build` |
-| 输出目录 | `.next` |
+> 依赖模型响应的用例偶尔会因为模型变慢而超时，单独重跑通常即可通过。
 
-在 EdgeOne 环境变量中配置 `GLM_API_KEY`、`GLM_MODEL` 和 `GLM_API_URL`。部署完成后访问 `/api/ai/health`，返回 `configured: true` 才表示服务端读取到了 API 密钥。
+## 交付 / 部署说明
 
-PDF worker 应该通过以下地址返回 `200 OK`：
+**要交的**：整个源码仓库（`app/ db/ drizzle/ public/ scripts/ tests/ worker/ build/ .openai/` + 配置文件 + 文档 + `package-lock.json`）。
 
-```text
-https://你的域名/pdf.worker.min.mjs
-```
+**不要交**：
 
-## Git 协作
+| 目录/文件 | 原因 |
+|---|---|
+| `.env.local` | **含真实模型密钥和数据库密码**，交付时只给 `.env.example` |
+| `node_modules/` | 770MB+，对方 `npm install` 重新装 |
+| `.next/ .vinext/ .wrangler/ dist/` | 构建缓存与产物，可重新生成 |
+| `.e2e/ .e2e-auth/` | 测试截图产物 |
+| `.git/`（可选） | 想保留提交历史就一起给，不想就删 |
 
-应提交源码、配置模板、产品文档、测试和 `package-lock.json`。不要提交：
+`git archive --format=zip -o qianqian-source.zip HEAD` 可以导出干净的源码包（只含被 Git 跟踪的文件，自动排除上面这些）。
 
-- `.env`、`.env.local` 和任何真实 API 密钥。
-- `node_modules/`。
-- `.next/`、`dist/`、`.vinext/`、`.wrangler/`。
-- 本地日志和临时缓存。
+## 已知限制
 
-朋友克隆项目后，在项目目录运行 `npm install`，再从 `.env.example` 创建自己的 `.env.local`。
-
-常用同步命令：
-
-```powershell
-git add .
-git status
-git commit -m "Update project documentation"
-git push github main
-```
-
-## 数据安全和限制
-
-- 原始文件、课程、资料和任务默认保存在当前浏览器。
-- AI 识别时，必要的文本或图片会发送到配置的 GLM API。
-- API 密钥只在服务端环境变量中使用，不应写进前端代码。
-- 清理浏览器站点数据可能删除本地资料，重要数据应先下载 JSON 备份。
-- 当前没有账号系统、云端数据库、跨设备同步和多人协作。
-- 当前没有真正的后台提醒、浏览器通知、邮件通知或短信通知。
-- 当前没有真正的 iCal/ICS、CSV、Markdown 导出。
-- 当前复习计划页面的计划内容是演示草案，尚未基于真实任务持久化保存。
-- 扫描 PDF 当前最多视觉识别前 3 页，后续页面可能没有参与提取。
-
-## 验证状态
-
-当前已验证：
-
-- TypeScript 类型检查通过。
-- ESLint 检查通过。
-- `npm test` 自动化测试通过。
-- EdgeOne 使用的 `next build` 通过。
-- `/pdf.worker.min.mjs` 在本地生产服务器返回 `200 OK`。
-
-最近一次 PDF worker 修复的本地提交为 `fb23b7c`。如果 GitHub 上没有该提交，需要在网络正常时执行 `git push github main`，然后重新触发 EdgeOne 部署。
+- 从登录页自助注册的账号默认是开放的（谁拿到网址都能建号）；不需要的话可以让管理员在「账号管理」里停用或删除，或用 `npm run accounts:clean` 批量清理测试账号。
+- Word / PPT 只做正文抽取（用于 Agent 阅读和检索），不在网页里渲染；图片和 PDF 可以内嵌预览。
+- 单文件上限 100MB、批量 500MB；图片发给模型前会自动压缩到 1600px / 700KB 以内。
+- 提醒需要浏览器通知权限；没授权时退化为对话内提醒 + 导出日历（.ics）。

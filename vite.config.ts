@@ -14,13 +14,9 @@ const isCodexSeatbeltSandbox = process.env.CODEX_SANDBOX === "seatbelt";
 const localBindingConfig = {
   main: "./worker/index.ts",
   compatibility_flags: ["nodejs_compat"],
-  vars: {
-    GLM_API_KEY: process.env.GLM_API_KEY ?? "",
-    GLM_MODEL: process.env.GLM_MODEL ?? "glm-5v-turbo",
-    GLM_API_URL:
-      process.env.GLM_API_URL ??
-      "https://open.bigmodel.cn/api/paas/v4/chat/completions",
-  },
+  // 应用自己的环境变量（DEEPSEEK_* / DATABASE_URL）走 .env.local，由运行时读取；
+  // 这里不再注入任何模型密钥，避免把密钥写进构建配置。
+  vars: {},
   d1_databases: d1
     ? [
         {
